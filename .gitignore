@@ -1,0 +1,5 @@
+# Package-level .gitignore files cover Dart/Flutter build output.
+.DS_Store
+.idea/
+*.iml
+.vscode/
