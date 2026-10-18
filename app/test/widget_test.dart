@@ -83,6 +83,49 @@ void main() {
     expect((core.device as MultilayerSwitch).ipRouting, isTrue);
   });
 
+  test('simulation mode steps through a ping frame by frame', () {
+    final lab = LabController();
+    final sw = lab.addDevice(DeviceKind.l2switch, const Offset(300, 100));
+    final pc1 = lab.addDevice(DeviceKind.pc, const Offset(100, 300));
+    final pc2 = lab.addDevice(DeviceKind.pc, const Offset(500, 300));
+    lab.setTool(Tool.cable);
+    for (final pc in [pc1, pc2]) {
+      lab
+        ..pickCablePort(lab.firstUsablePort(pc)!)
+        ..pickCablePort(lab.firstUsablePort(sw)!);
+    }
+    lab.advance(10000);
+    final t1 = lab.openConsole(pc1, near: Offset.zero).terminal;
+    lab
+        .openConsole(pc2, near: Offset.zero)
+        .terminal
+        .submit('ipconfig 10.0.0.2 255.255.255.0');
+    t1.submit('ipconfig 10.0.0.1 255.255.255.0');
+
+    lab.setSimulation(true);
+    expect(lab.running, isFalse);
+    t1.submit('ping -n 1 10.0.0.2');
+
+    // Each step moves to the next tick that puts a frame on a cable.
+    expect(lab.step(), isTrue);
+    expect(lab.simEvents.single.description, startsWith('ARP request'));
+    expect(lab.simEvents.single.from, 'PC1 Fa0');
+    expect(lab.simEvents.single.to, 'SW1 Fa0/1');
+    expect(lab.packets, hasLength(1));
+    lab.step(); // flooded to PC2
+    lab.step(); // ARP reply
+    expect(lab.simEvents.last.description, startsWith('ARP reply'));
+    while (t1.backend.busy && lab.step()) {}
+    final icmp = lab.simEvents.where((e) => e.kind == FrameKind.icmp);
+    expect(icmp, hasLength(4)); // request and reply, each over two cables
+    expect(lab.simEvents.where((e) => e.kind == FrameKind.stp), isEmpty);
+    expect(t1.lines.join('\n'), contains('Received = 1'));
+
+    lab.setSimulation(false);
+    expect(lab.running, isTrue);
+    expect(lab.network.onTransmit, isNull);
+  });
+
   test('two PCs ping through a switch using their console terminals', () {
     final lab = LabController();
     final sw = lab.addDevice(DeviceKind.l2switch, const Offset(300, 100));

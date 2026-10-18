@@ -8,6 +8,7 @@ import '../theme.dart';
 import 'canvas_view.dart';
 import 'console_window.dart';
 import 'device_glyph.dart';
+import 'simulation_panel.dart';
 
 /// The tablet layout: menu bar, palette, canvas with consoles, status bar.
 class LabScreen extends StatefulWidget {
@@ -24,6 +25,10 @@ class _LabScreenState extends State<LabScreen>
   late final Ticker _ticker;
   Duration _last = Duration.zero;
   Size _canvasSize = Size.zero;
+  int _lastStep = 0;
+
+  /// Pause between automatic steps after the packets have arrived.
+  static const _playInterval = 250;
 
   @override
   void initState() {
@@ -34,6 +39,16 @@ class _LabScreenState extends State<LabScreen>
       // Realtime: one simulated millisecond per real one, capped so a stall
       // does not dump seconds of traffic at once.
       if (lab.running) lab.advance(math.min(delta, 100));
+      if (lab.simulation) {
+        // Repaint while packets are moving; Play steps once each settles.
+        if (lab.pruneAnimations()) {
+          lab.ticks.value++;
+        } else if (lab.simPlaying &&
+            lab.animationNow - _lastStep > _playInterval) {
+          _lastStep = lab.animationNow;
+          lab.step();
+        }
+      }
     })..start();
   }
 
@@ -144,6 +159,11 @@ class _LabScreenState extends State<LabScreen>
                         child: Column(
                           children: [
                             Expanded(child: _canvasArea(compact: compact)),
+                            if (lab.simulation)
+                              SimulationPanel(
+                                lab: lab,
+                                height: compact ? 132 : 200,
+                              ),
                             if (docked != null)
                               SizedBox(
                                 height: dockedHeight,
@@ -409,14 +429,14 @@ class _Header extends StatelessWidget {
                         label: 'Realtime',
                         first: true,
                         compact: compact,
-                        selected: lab.running,
+                        selected: !lab.simulation,
                         onTap: () => lab.setRunning(true),
                       ),
                       _ChromeButton(
-                        label: 'Paused',
+                        label: 'Simulation',
                         compact: compact,
-                        selected: !lab.running,
-                        onTap: () => lab.setRunning(false),
+                        selected: lab.simulation,
+                        onTap: () => lab.setSimulation(true),
                       ),
                     ],
                   ),
@@ -431,6 +451,12 @@ class _Header extends StatelessWidget {
 }
 
 String _title(String s) => s[0].toUpperCase() + s.substring(1);
+
+String _runMode(LabController lab) => lab.simulation
+    ? 'simulation'
+    : lab.running
+    ? 'realtime'
+    : 'paused';
 
 /// The File, Edit, View, Devices, Simulation and Help menus. [nested] when
 /// they hang off a single menu button rather than a menu bar.
@@ -514,19 +540,33 @@ List<Widget> _menus(
         item('Add ${kind.label}', () => onAdd(kind)),
     ]),
     menu('Simulation', [
-      RadioMenuButton<bool>(
-        value: true,
-        groupValue: lab.running,
+      RadioMenuButton<String>(
+        value: 'realtime',
+        groupValue: _runMode(lab),
         onChanged: (_) => lab.setRunning(true),
         child: const Text('Run in real time'),
       ),
-      RadioMenuButton<bool>(
-        value: false,
-        groupValue: lab.running,
-        onChanged: (_) => lab.setRunning(false),
+      RadioMenuButton<String>(
+        value: 'paused',
+        groupValue: _runMode(lab),
+        onChanged: (_) => lab
+          ..setSimulation(false)
+          ..setRunning(false),
         child: const Text('Pause'),
       ),
-      item('Step 100 ms', lab.running ? null : () => lab.advance(100)),
+      RadioMenuButton<String>(
+        value: 'simulation',
+        groupValue: _runMode(lab),
+        onChanged: (_) => lab.setSimulation(true),
+        child: const Text('Simulation (step through frames)'),
+      ),
+      const Divider(height: 8),
+      item('Step', lab.simulation ? lab.step : null),
+      CheckboxMenuButton(
+        value: lab.showStp,
+        onChanged: (v) => lab.setShowStp(v ?? false),
+        child: const Text('Show spanning tree BPDUs'),
+      ),
     ]),
     menu('Help', [item('About PocketRoute', () => _about(context))]),
   ];
@@ -912,7 +952,7 @@ class _StatusBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Text(lab.running ? 'Realtime' : 'Paused', style: style),
+          Text(_title(_runMode(lab)), style: style),
           rule(),
           ValueListenableBuilder(
             valueListenable: lab.ticks,

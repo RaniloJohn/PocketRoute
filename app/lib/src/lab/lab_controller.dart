@@ -54,6 +54,36 @@ class NodeView {
   String get name => device.hostname;
 }
 
+/// One frame in the simulation event list.
+class SimEvent {
+  const SimEvent({
+    required this.time,
+    required this.from,
+    required this.to,
+    required this.description,
+    required this.kind,
+  });
+
+  /// Simulated milliseconds.
+  final int time;
+  final String from;
+  final String to;
+  final String description;
+  final FrameKind kind;
+}
+
+/// A frame drawn travelling along its cable.
+class PacketAnimation {
+  const PacketAnimation(this.from, this.to, this.kind, this.start);
+
+  final NodeView from;
+  final NodeView to;
+  final FrameKind kind;
+
+  /// [LabController.animationNow] when it set off.
+  final int start;
+}
+
 /// One console window and its terminal.
 class ConsoleWindow extends ChangeNotifier {
   ConsoleWindow(this.node, this.terminal, {required this.position});
@@ -143,7 +173,119 @@ class LabController extends ChangeNotifier {
 
   void setRunning(bool value) {
     running = value;
+    if (value) _leaveSimulation();
     _changed();
+  }
+
+  // --- Simulation mode -------------------------------------------------
+
+  /// Simulation mode: the clock stops and time moves one step at a time,
+  /// with every frame listed and animated along its cable.
+  bool simulation = false;
+
+  /// Steps automatically while true.
+  bool simPlaying = false;
+
+  /// Spanning tree BPDUs are constant background chatter; hidden by default.
+  bool showStp = false;
+  final simEvents = <SimEvent>[];
+  final packets = <PacketAnimation>[];
+  final _pending = <Transit>[];
+  final _clock = Stopwatch()..start();
+
+  static const maxEvents = 500;
+  static const packetMillis = 550;
+
+  /// Wall-clock milliseconds, for animation only.
+  int get animationNow => _clock.elapsedMilliseconds;
+
+  void setSimulation(bool value) {
+    if (value == simulation) return;
+    if (value) {
+      simulation = true;
+      running = false;
+      network.onTransmit = _record;
+      message = 'Simulation: press Step, or Play, then ping from a PC';
+    } else {
+      _leaveSimulation();
+      running = true;
+    }
+    _changed();
+  }
+
+  void _leaveSimulation() {
+    simulation = false;
+    simPlaying = false;
+    network.onTransmit = null;
+    _pending.clear();
+    packets.clear();
+  }
+
+  void setSimPlaying(bool value) {
+    simPlaying = value;
+    _changed();
+  }
+
+  void setShowStp(bool value) {
+    showStp = value;
+    _changed();
+  }
+
+  void clearEvents() {
+    simEvents.clear();
+    _changed();
+  }
+
+  void _record(Transit transit) {
+    if (!showStp && transit.kind == FrameKind.stp) return;
+    _pending.add(transit);
+  }
+
+  /// Shows the next batch of visible frames: those already sent, or else
+  /// runs simulated time up to the next tick that sends one. Records them
+  /// and starts their animations. Returns false if nothing visible happened
+  /// within [maxTicks] steps.
+  bool step({int maxTicks = 500}) {
+    // Frames sent since the last step (e.g. by a ping typed in a console)
+    // are already on their cables: show those before running time on.
+    for (var i = 0; i < maxTicks && _pending.isEmpty; i++) {
+      if (!network.scheduler.step()) break;
+    }
+    final start = animationNow;
+    for (final transit in _pending) {
+      final from = nodeFor(transit.from.device);
+      final to = nodeFor(transit.to.device);
+      if (from == null || to == null) continue;
+      simEvents.add(
+        SimEvent(
+          time: transit.sentAt,
+          from: '${from.name} ${transit.from.shortName}',
+          to: '${to.name} ${transit.to.shortName}',
+          description: transit.description,
+          kind: transit.kind,
+        ),
+      );
+      packets.add(PacketAnimation(from, to, transit.kind, start));
+    }
+    if (simEvents.length > maxEvents) {
+      simEvents.removeRange(0, simEvents.length - maxEvents);
+    }
+    final moved = _pending.isNotEmpty;
+    message = moved
+        ? null
+        : 'Nothing is being sent. Start a ping from a PC console, then Step.';
+    if (!moved) simPlaying = false;
+    _pending.clear();
+    ticks.value++;
+    _changed();
+    return moved;
+  }
+
+  /// Drops finished animations; true while any are still moving.
+  bool pruneAnimations() {
+    final now = animationNow;
+    packets.removeWhere((p) => now - p.start > packetMillis);
+    return packets.isNotEmpty;
   }
 
   /// Moves simulated time forward by [millis].

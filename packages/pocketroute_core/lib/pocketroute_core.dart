@@ -24,3 +24,4 @@ export 'src/protocols/stp.dart';
 export 'src/protocols/vlan.dart';
 export 'src/sim/network.dart';
 export 'src/sim/scheduler.dart';
+export 'src/sim/transit.dart';

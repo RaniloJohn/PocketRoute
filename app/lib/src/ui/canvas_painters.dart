@@ -7,6 +7,7 @@ import 'package:pocketroute_core/pocketroute_core.dart';
 import '../lab/lab_controller.dart';
 import '../theme.dart';
 import 'device_glyph.dart';
+import 'simulation_panel.dart';
 
 /// Grid, dots or nothing, behind everything.
 class GridPainter extends CustomPainter {
@@ -204,6 +205,7 @@ class OverlayPainter extends CustomPainter {
         }
       }
     }
+    _paintPackets(canvas);
     final selected = lab.selected;
     if (selected != null) {
       // Around the icon and its name label.
@@ -218,6 +220,50 @@ class OverlayPainter extends CustomPainter {
           ..color = Tokens.accent,
         const [4, 3],
       );
+    }
+  }
+
+  /// Frames in flight: an envelope moving from the sender's outline to the
+  /// receiver's, eased so it is easy to follow.
+  void _paintPackets(Canvas canvas) {
+    final now = lab.animationNow;
+    for (final packet in lab.packets) {
+      final d = packet.to.position - packet.from.position;
+      final len = d.distance;
+      if (len == 0) continue;
+      final u = d / len;
+      final start =
+          packet.from.position + u * outlineReach(packet.from.kind, u.dx, u.dy);
+      final end =
+          packet.to.position - u * outlineReach(packet.to.kind, u.dx, u.dy);
+      final t = ((now - packet.start) / LabController.packetMillis).clamp(
+        0.0,
+        1.0,
+      );
+      final at = Offset.lerp(start, end, Curves.easeInOut.transform(t))!;
+      final body = RRect.fromRectAndRadius(
+        Rect.fromCenter(center: at, width: 16, height: 11),
+        const Radius.circular(2),
+      );
+      canvas
+        ..drawRRect(body, Paint()..color = frameColor(packet.kind))
+        ..drawRRect(
+          body,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.2
+            ..color = Colors.white,
+        )
+        ..drawPath(
+          Path()
+            ..moveTo(at.dx - 6, at.dy - 3.5)
+            ..lineTo(at.dx, at.dy + 0.5)
+            ..lineTo(at.dx + 6, at.dy - 3.5),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1
+            ..color = Colors.white,
+        );
     }
   }
 

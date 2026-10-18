@@ -1,6 +1,7 @@
 import '../net/frames.dart';
 import '../net/mac_address.dart';
 import 'scheduler.dart';
+import 'transit.dart';
 
 /// Cable kinds, each fitting one kind of port.
 enum CableType {
@@ -30,6 +31,9 @@ class Network {
   /// Ticks a frame takes to cross any link.
   final int linkDelay;
   final Scheduler scheduler = Scheduler();
+
+  /// Called for every frame put onto a cable (simulation mode watches this).
+  void Function(Transit transit)? onTransmit;
   final _devices = <String, Device>{};
   final _links = <Link>[];
 
@@ -153,6 +157,17 @@ class Link {
 
   void _carry(Port from, Frame frame) {
     final to = otherEnd(from);
+    final now = network.scheduler.now;
+    network.onTransmit?.call(
+      Transit(
+        link: this,
+        from: from,
+        to: to,
+        frame: frame,
+        sentAt: now,
+        arrivesAt: now + network.linkDelay,
+      ),
+    );
     network.scheduler.schedule(network.linkDelay, () {
       // The cable may have been pulled or the port shut while in flight.
       if (identical(to._link, this) && to.isUp) to.device.receive(to, frame);
