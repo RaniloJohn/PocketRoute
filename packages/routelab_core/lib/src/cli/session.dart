@@ -15,9 +15,12 @@ class CliSession {
 
   CliMode mode = CliMode.userExec;
 
-  /// The interface being configured in [CliMode.interfaceConfig].
+  /// What a sub-mode is configuring: an interface, a VLAN ID, ...
   Object? target;
   bool busy = false;
+
+  /// True while a saved configuration is replayed; warnings are suppressed.
+  bool loadingConfig = false;
   final history = <String>[];
 
   String get prompt {
@@ -27,11 +30,12 @@ class CliSession {
       CliMode.privilegedExec => '$host#',
       CliMode.globalConfig => '$host(config)#',
       CliMode.interfaceConfig => '$host(config-if)#',
+      CliMode.subinterfaceConfig => '$host(config-subif)#',
+      CliMode.vlanConfig => '$host(config-vlan)#',
     };
   }
 
-  bool get inConfig =>
-      mode == CliMode.globalConfig || mode == CliMode.interfaceConfig;
+  bool get inConfig => mode.isConfig;
 
   void write(String text) => _write(text);
 
@@ -49,7 +53,7 @@ class CliSession {
     if (input.words.isEmpty || input.words.first.text.startsWith('!')) return;
     var walked = walk(commands.rootsFor(mode), input);
     // A global command typed in a sub-mode runs there and leaves the sub-mode.
-    if (walked is WalkInvalid && mode == CliMode.interfaceConfig) {
+    if (walked is WalkInvalid && mode.isSubConfig) {
       final global = walk(commands.rootsFor(CliMode.globalConfig), input);
       if (global case WalkOk(handler: _?)) {
         mode = CliMode.globalConfig;

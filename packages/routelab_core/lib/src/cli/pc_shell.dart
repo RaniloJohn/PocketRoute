@@ -24,6 +24,8 @@ class PcShell {
         _ping(args);
       case 'arp':
         _arp(args);
+      case 'tracert':
+        _tracert(args);
       case 'help' || '?':
         _help();
       default:
@@ -41,6 +43,7 @@ class PcShell {
       ('ipconfig', 'Show IP settings (add /all for the MAC address)'),
       ('ipconfig IP MASK [GATEWAY]', 'Set a static IP address'),
       ('ping [-n COUNT] IP', 'Test reachability with ICMP echo'),
+      ('tracert IP', 'List the routers on the path to an address'),
     ]) {
       _writeln('${command.padRight(28)}$text');
     }
@@ -109,6 +112,63 @@ class PcShell {
     }
   }
 
+  static const maxHops = 30;
+
+  /// Probes with TTL 1, 2, 3... (three per hop) until the target answers.
+  void _tracert(List<String> args) {
+    final target = args.length == 1 ? Ipv4Address.tryParse(args.single) : null;
+    if (target == null) return _writeln('Usage: tracert IP');
+    busy = true;
+    _writeln();
+    _writeln('Tracing route to $target over a maximum of $maxHops hops:');
+    _writeln();
+
+    void finish(String? note) {
+      if (note != null) _writeln(note);
+      _writeln();
+      _writeln('Trace complete.');
+      busy = false;
+    }
+
+    void hop(int ttl) {
+      final cells = <String>[];
+      Ipv4Address? from;
+      PingStatus? last;
+      pc.ip.ping(
+        target,
+        count: 3,
+        timeout: 4000,
+        ttl: ttl,
+        onResult: (result) {
+          last = result.status;
+          if (result.rtt != null) {
+            cells.add('${result.rtt} ms');
+            from = result.from;
+          } else {
+            cells.add('*');
+          }
+        },
+        onDone: () {
+          if (last == PingStatus.noRoute) {
+            return finish('Transmit failed: no route to $target.');
+          }
+          final times = cells.map((c) => c.padLeft(6)).join(' ');
+          _writeln(
+            '${'$ttl'.padLeft(3)}  $times  ${from ?? 'Request timed out.'}',
+          );
+          if (last == PingStatus.reply) return finish(null);
+          if (last == PingStatus.unreachable) {
+            return finish('$from reports: Destination net unreachable.');
+          }
+          if (ttl >= maxHops) return finish(null);
+          hop(ttl + 1);
+        },
+      );
+    }
+
+    hop(1);
+  }
+
   void _ping(List<String> args) {
     var count = 4;
     String? targetText;
@@ -133,6 +193,7 @@ class PcShell {
 
     busy = true;
     final rtts = <int>[];
+    var received = 0;
     _writeln();
     _writeln('Pinging $target with 32 bytes of data:');
     _writeln();
@@ -141,21 +202,28 @@ class PcShell {
       count: count,
       timeout: 4000,
       interval: 1000,
-      onResult: (result) => _writeln(switch (result.status) {
-        PingStatus.reply => () {
-          rtts.add(result.rtt!);
-          return 'Reply from $target: bytes=${result.size} '
-              'time=${result.rtt}ms TTL=${result.ttl}';
-        }(),
-        PingStatus.timeout => 'Request timed out.',
-        PingStatus.noRoute => 'Transmit failed: no route to $target.',
-      }),
+      onResult: (result) {
+        // As on Windows, an ICMP error back from a router counts as received.
+        if (result.rtt != null) received++;
+        if (result.ok) rtts.add(result.rtt!);
+        _writeln(switch (result.status) {
+          PingStatus.reply =>
+            'Reply from $target: bytes=${result.size} '
+                'time=${result.rtt}ms TTL=${result.ttl}',
+          PingStatus.unreachable =>
+            'Reply from ${result.from}: Destination host unreachable.',
+          PingStatus.ttlExceeded =>
+            'Reply from ${result.from}: TTL expired in transit.',
+          PingStatus.timeout => 'Request timed out.',
+          PingStatus.noRoute => 'Transmit failed: no route to $target.',
+        });
+      },
       onDone: () {
-        final lost = count - rtts.length;
+        final lost = count - received;
         _writeln();
         _writeln('Ping statistics for $target:');
         _writeln(
-          '    Packets: Sent = $count, Received = ${rtts.length}, '
+          '    Packets: Sent = $count, Received = $received, '
           'Lost = $lost (${lost * 100 ~/ count}% loss),',
         );
         if (rtts.isNotEmpty) {

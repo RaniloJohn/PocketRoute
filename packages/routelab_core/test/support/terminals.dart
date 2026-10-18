@@ -1,9 +1,11 @@
 import 'package:routelab_core/routelab_core.dart';
 
-/// Drives a switch console the way the terminal UI will.
-class SwitchTerminal {
-  SwitchTerminal(L2Switch sw) {
-    session = sw.openCli(_out.write);
+typedef SwitchTerminal = CliTerminal;
+
+/// Drives a switch or router console the way the terminal UI will.
+class CliTerminal {
+  CliTerminal(ConfigurableDevice device) {
+    session = device.openCli(_out.write);
   }
 
   final _out = StringBuffer();

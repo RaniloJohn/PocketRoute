@@ -86,10 +86,13 @@ void main() {
     );
     final show = t.run('show ?').split('\n');
     expect(show.map((l) => l.trim().split(' ').first), [
+      'interfaces',
       'ip',
       'mac',
       'running-config',
+      'spanning-tree',
       'startup-config',
+      'vlan',
       '',
     ]);
   });

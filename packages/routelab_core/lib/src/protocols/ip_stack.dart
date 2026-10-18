@@ -2,26 +2,13 @@ import '../net/frames.dart';
 import '../net/ipv4.dart';
 import '../net/mac_address.dart';
 import '../sim/scheduler.dart';
+import 'echo.dart';
 
-enum PingStatus { reply, timeout, noRoute }
+export 'echo.dart' show PingResult, PingStatus;
 
-/// The outcome of one echo request.
-class PingResult {
-  const PingResult(this.seq, this.status, {this.rtt, this.ttl, this.size = 0});
-
-  final int seq;
-  final PingStatus status;
-
-  /// Round-trip time in ticks (milliseconds); set for replies.
-  final int? rtt;
-  final int? ttl;
-  final int size;
-
-  bool get ok => status == PingStatus.reply;
-}
-
-/// A host's IPv4 layer on one interface: addressing, ARP (RFC 826) and ICMP
-/// echo (RFC 792). Hosts do not forward; routers will add that later.
+/// IPv4 on one interface: addressing and ARP (RFC 826). On its own it acts as
+/// a host (default gateway, answering pings). A router sets [onPacket] to take
+/// over every received packet and sends through [sendTo] itself.
 class IpStack {
   IpStack({
     required this._scheduler,
@@ -30,6 +17,7 @@ class IpStack {
     required this.isUp,
     this.defaultTtl = 128,
     this.arpTimeout = 120000,
+    this.onPacket,
   });
 
   final Scheduler Function() _scheduler;
@@ -43,6 +31,9 @@ class IpStack {
   /// Ticks an ARP entry stays valid.
   final int arpTimeout;
 
+  /// Takes over received IPv4 packets (routers). Null: behave as a host.
+  final void Function(Ipv4Packet packet)? onPacket;
+
   /// Ticks to wait for an ARP reply before dropping queued packets.
   static const arpRequestTimeout = 1000;
 
@@ -51,8 +42,12 @@ class IpStack {
   Ipv4Address? gateway;
   final _arp = <Ipv4Address, (MacAddress, int)>{};
   final _pending = <Ipv4Address, List<Ipv4Packet>>{};
-  final _echoWaiters = <(int, int), void Function(Ipv4Packet)>{};
-  int _nextEchoId = 1;
+
+  late final EchoClient echo = EchoClient(
+    scheduler: _scheduler,
+    send: send,
+    source: (_) => _address ?? Ipv4Address.any,
+  );
 
   Scheduler get scheduler => _scheduler();
 
@@ -82,28 +77,48 @@ class IpStack {
     return {for (final ip in keys) ip: _arp[ip]!.$1};
   }
 
+  /// Live ARP entries as (address, MAC, age in ticks), sorted by address.
+  List<(Ipv4Address, MacAddress, int)> get arpTable => [
+    for (final MapEntry(key: ip, value: mac) in arpEntries.entries)
+      (ip, mac, scheduler.now - _arp[ip]!.$2),
+  ];
+
   /// Handles a frame addressed to [mac] or broadcast.
   void receive(Frame frame) {
     if (!isConfigured) return;
     switch (frame.payload) {
       case final ArpPacket arp:
         _onArp(arp);
-      case final Ipv4Packet packet:
-        if (frame.dst == mac) _onIp(packet);
+      case final Ipv4Packet packet when frame.dst == mac:
+        final handler = onPacket;
+        if (handler != null) {
+          handler(packet);
+        } else {
+          _onHostPacket(packet);
+        }
+      default:
+        break;
     }
   }
 
-  /// Sends [packet], resolving the next hop with ARP first if needed.
-  /// Returns false when there is no way to reach the destination.
+  /// Sends [packet] as a host: directly on the local subnet, otherwise via
+  /// [gateway]. False when there is no way to reach the destination.
   bool send(Ipv4Packet packet) {
     final address = _address, mask = _mask;
     if (address == null || mask == null || !isUp()) return false;
     if (packet.dst == address) {
-      scheduler.schedule(0, () => _onIp(packet));
+      scheduler.schedule(0, () => _onHostPacket(packet));
       return true;
     }
     final nextHop = packet.dst.sameSubnet(address, mask) ? packet.dst : gateway;
-    if (nextHop == null) return false;
+    return nextHop != null && sendTo(nextHop, packet);
+  }
+
+  /// Sends [packet] to the neighbour at [nextHop], resolving it with ARP
+  /// first if needed. Packets wait up to [arpRequestTimeout] for the reply.
+  bool sendTo(Ipv4Address nextHop, Ipv4Packet packet) {
+    final address = _address;
+    if (address == null || !isUp()) return false;
     final known = _lookup(nextHop);
     if (known != null) {
       transmit(Frame(src: mac, dst: known, payload: packet));
@@ -134,64 +149,26 @@ class IpStack {
     return true;
   }
 
-  /// Sends [count] echo requests, one after another: the next goes out
-  /// [interval] ticks after a reply or timeout. [onResult] fires per request,
-  /// then [onDone] once.
+  /// Pings [target] as a host. See [EchoClient.ping].
   void ping(
     Ipv4Address target, {
     int count = 4,
     int timeout = 1000,
     int interval = 0,
     int size = 32,
+    int? ttl,
     required void Function(PingResult result) onResult,
     void Function()? onDone,
-  }) {
-    final id = _nextEchoId++;
-
-    void sendSeq(int seq) {
-      if (seq >= count) {
-        onDone?.call();
-        return;
-      }
-      final sentAt = scheduler.now;
-      var settled = false;
-      void finish(PingResult result) {
-        if (settled) return;
-        settled = true;
-        _echoWaiters.remove((id, seq));
-        onResult(result);
-        scheduler.schedule(interval, () => sendSeq(seq + 1));
-      }
-
-      _echoWaiters[(id, seq)] = (reply) => finish(
-        PingResult(
-          seq,
-          PingStatus.reply,
-          rtt: scheduler.now - sentAt,
-          ttl: reply.ttl,
-          size: size,
-        ),
-      );
-      final sent = send(
-        Ipv4Packet(
-          src: _address ?? Ipv4Address.any,
-          dst: target,
-          ttl: defaultTtl,
-          body: IcmpEcho(isReply: false, id: id, seq: seq, size: size),
-        ),
-      );
-      if (!sent) {
-        finish(PingResult(seq, PingStatus.noRoute));
-        return;
-      }
-      scheduler.schedule(
-        timeout,
-        () => finish(PingResult(seq, PingStatus.timeout)),
-      );
-    }
-
-    sendSeq(0);
-  }
+  }) => echo.ping(
+    target,
+    count: count,
+    timeout: timeout,
+    interval: interval,
+    size: size,
+    ttl: ttl ?? defaultTtl,
+    onResult: onResult,
+    onDone: onDone,
+  );
 
   MacAddress? _lookup(Ipv4Address ip) {
     final entry = _arp[ip];
@@ -230,20 +207,20 @@ class IpStack {
     }
   }
 
-  void _onIp(Ipv4Packet packet) {
+  void _onHostPacket(Ipv4Packet packet) {
     if (packet.dst != _address) return;
     switch (packet.body) {
-      case IcmpEcho(isReply: false) && final echo:
+      case IcmpEcho(isReply: false) && final request:
         send(
           Ipv4Packet(
             src: _address!,
             dst: packet.src,
             ttl: defaultTtl,
-            body: echo.toReply(),
+            body: request.toReply(),
           ),
         );
-      case final IcmpEcho echo:
-        _echoWaiters[(echo.id, echo.seq)]?.call(packet);
+      default:
+        echo.handle(packet);
     }
   }
 }

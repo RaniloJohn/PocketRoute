@@ -37,6 +37,8 @@ void main() {
       ..connect(pc1.nic, sw.port('Fa0/1')!)
       ..connect(pc2.nic, sw.port('Fa0/2')!)
       ..connect(pc3.nic, sw.port('Fa0/3')!);
+    net.scheduler
+        .runUntilIdle(); // spanning tree brings the ports to forwarding
     t1 = PcTerminal(pc1);
     t2 = PcTerminal(pc2);
     console = SwitchTerminal(sw);
@@ -72,9 +74,11 @@ void main() {
     expect(table, contains('Total Mac Addresses for this criterion: 2'));
 
     // pc3 got the broadcast ARP request; replies and ICMP went only to pc1/pc2.
-    expect(pc3.frames, hasLength(1));
-    expect(pc3.frames.single.payload, isA<ArpPacket>());
-    expect(pc3.frames.single.dst.isBroadcast, isTrue);
+    // (It also hears the switch's spanning tree BPDUs, as real hosts do.)
+    final data = pc3.frames.where((f) => f.payload is! Bpdu).toList();
+    expect(data, hasLength(1));
+    expect(data.single.payload, isA<ArpPacket>());
+    expect(data.single.dst.isBroadcast, isTrue);
   });
 
   test('both PCs fill their ARP caches', () {

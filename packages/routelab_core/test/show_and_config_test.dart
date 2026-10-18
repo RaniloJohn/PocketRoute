@@ -13,6 +13,7 @@ void main() {
     sw = net.add(L2Switch('sw', fastEthernetPorts: 2, gigabitPorts: 0));
     final pc = net.add(Pc('pc'));
     net.connect(pc.nic, sw.port('Fa0/1')!);
+    net.scheduler.runUntilIdle(); // spanning tree brings Fa0/1 to forwarding
     t = SwitchTerminal(sw);
     t.runAll([
       'enable',
@@ -74,7 +75,7 @@ void main() {
       L2Switch('x', fastEthernetPorts: 1, gigabitPorts: 0),
     );
     expect(
-      renderConfig(fresh),
+      fresh.renderConfig(),
       '!\n'
       'hostname Switch\n'
       '!\n'
@@ -92,8 +93,8 @@ void main() {
     final copy = Network().add(
       L2Switch('copy', fastEthernetPorts: 2, gigabitPorts: 0),
     );
-    expect(applyConfig(copy, renderConfig(sw)), isEmpty);
-    expect(renderConfig(copy), renderConfig(sw));
+    expect(applyConfig(copy, sw.renderConfig()), isEmpty);
+    expect(copy.renderConfig(), sw.renderConfig());
     expect(copy.port('Fa0/2')!.adminUp, isFalse);
     expect(copy.sviAdminUp, isTrue);
   });

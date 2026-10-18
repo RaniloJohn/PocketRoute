@@ -1,4 +1,5 @@
 import '../net/ipv4.dart';
+import '../protocols/vlan.dart';
 import 'session.dart';
 
 typedef CommandHandler = void Function(CommandContext ctx);
@@ -119,6 +120,20 @@ final class Ipv4Arg extends ArgToken {
   }
 }
 
+/// A VLAN list such as `10`, `10,20` or `10-20,30`.
+final class VlanListArg extends ArgToken {
+  const VlanListArg(super.name);
+
+  @override
+  String get label => 'WORD';
+
+  @override
+  ArgMatch? match(CommandInput input, int index) {
+    final value = VlanSet.tryParse(input.words[index].text);
+    return value == null ? null : ArgMatch(1, value);
+  }
+}
+
 /// An interface type and number, as `Fa0/1`, `fastethernet 0/1` or `vlan 1`.
 class InterfaceRef {
   const InterfaceRef(this.type, this.number);
@@ -226,22 +241,31 @@ class CmdNode {
 }
 
 /// CLI modes, each with its own command tree and prompt.
-enum CliMode { userExec, privilegedExec, globalConfig, interfaceConfig }
+enum CliMode {
+  userExec,
+  privilegedExec,
+  globalConfig,
+  interfaceConfig,
+  subinterfaceConfig,
+  vlanConfig;
+
+  bool get isConfig => index >= globalConfig.index;
+
+  /// Modes entered from global configuration (interface, VLAN, ...).
+  bool get isSubConfig => index > globalConfig.index;
+}
 
 /// The command trees for every mode of one device.
 class CommandSet {
   CommandSet(Map<CliMode, List<CmdNode>> roots)
     : _roots = {
         for (final MapEntry(key: mode, value: nodes) in roots.entries)
-          mode: _isConfig(mode) ? [...nodes, _negationOf(nodes)] : nodes,
+          mode: mode.isConfig ? [...nodes, _negationOf(nodes)] : nodes,
       };
 
   final Map<CliMode, List<CmdNode>> _roots;
 
   List<CmdNode> rootsFor(CliMode mode) => _roots[mode] ?? const [];
-
-  static bool _isConfig(CliMode mode) =>
-      mode == CliMode.globalConfig || mode == CliMode.interfaceConfig;
 
   static CmdNode _negationOf(List<CmdNode> nodes) => CmdNode(
     const Keyword('no'),
@@ -266,4 +290,9 @@ class CommandContext {
   void write(String text) => session.write(text);
 
   void writeln([String line = '']) => session.write('$line\n');
+
+  /// Advice for someone typing; not shown while a saved config is loading.
+  void warn(String line) {
+    if (!session.loadingConfig) writeln(line);
+  }
 }

@@ -1,8 +1,10 @@
 import '../devices/l2_switch.dart';
 import '../net/ipv4.dart';
-import '../protocols/ip_stack.dart';
+import '../protocols/stp.dart';
+import '../protocols/vlan.dart';
 import '../sim/network.dart';
 import 'command.dart';
+import 'common_commands.dart';
 
 // Help strings here are RouteLab's own wording. Only command names, mode
 // structure and output column layouts follow the public IOS-style convention.
@@ -29,287 +31,459 @@ const _interfaceTypes = {
 };
 
 /// Builds the command trees for [sw].
+CmdNode _vlanIdArg(
+  String help, {
+  List<CmdNode> children = const [],
+  CommandHandler? run,
+  CommandHandler? negate,
+}) => CmdNode.arg(
+  const IntArg('vlan', minVlan, maxVlan),
+  help,
+  children: children,
+  run: run,
+  negate: negate,
+);
+
 CommandSet switchCommands(L2Switch sw) {
-  final ping = CmdNode.keyword(
-    'ping',
-    'Send ICMP echo requests to test reachability',
-    children: [
-      CmdNode.arg(
-        const Ipv4Arg('target'),
-        'Address to ping',
-        run: (ctx) => _ping(ctx, sw),
+  return buildCommandSet(
+    sw,
+    interfaceNode: CmdNode.keyword(
+      'interface',
+      'Select an interface to configure',
+      children: [
+        CmdNode.arg(
+          const InterfaceArg('interface', _interfaceTypes),
+          '',
+          run: (ctx) => _selectInterface(ctx, sw),
+        ),
+      ],
+    ),
+    ping: (ctx) => iosPing(ctx, sw.svi.isConfigured ? sw.svi.echo : null),
+    show: ({required privileged}) => [
+      CmdNode.keyword(
+        'interfaces',
+        'Interface status',
+        children: [
+          CmdNode.keyword(
+            'trunk',
+            'Ports in trunk mode',
+            run: (ctx) => ctx.write(showInterfacesTrunk(sw)),
+          ),
+        ],
+      ),
+      CmdNode.keyword(
+        'ip',
+        'IP information',
+        children: [
+          CmdNode.keyword(
+            'interface',
+            'IP status of interfaces',
+            children: [
+              CmdNode.keyword(
+                'brief',
+                'One line per interface',
+                run: (ctx) => ctx.write(showIpInterfaceBrief(sw)),
+              ),
+            ],
+          ),
+        ],
+      ),
+      CmdNode.keyword(
+        'mac',
+        'MAC address information',
+        children: [
+          CmdNode.keyword(
+            'address-table',
+            'Addresses this switch has learned',
+            run: (ctx) => ctx.write(showMacAddressTable(sw)),
+          ),
+        ],
+      ),
+      CmdNode.keyword(
+        'spanning-tree',
+        'Spanning tree roles and states',
+        run: (ctx) => ctx.write(showSpanningTree(sw)),
+      ),
+      CmdNode.keyword(
+        'vlan',
+        'VLANs and their ports',
+        run: (ctx) => ctx.write(showVlanBrief(sw)),
+        children: [
+          CmdNode.keyword(
+            'brief',
+            'One line per VLAN',
+            run: (ctx) => ctx.write(showVlanBrief(sw)),
+          ),
+        ],
       ),
     ],
-  );
-
-  List<CmdNode> showChildren({required bool privileged}) => [
-    CmdNode.keyword(
-      'ip',
-      'IP information',
-      children: [
+    extras: {
+      CliMode.privilegedExec: [
         CmdNode.keyword(
-          'interface',
-          'IP status of interfaces',
+          'clear',
+          'Reset counters or tables',
           children: [
             CmdNode.keyword(
-              'brief',
-              'One line per interface',
-              run: (ctx) => ctx.write(showIpInterfaceBrief(sw)),
+              'mac',
+              'MAC address tables',
+              children: [
+                CmdNode.keyword(
+                  'address-table',
+                  'Forget learned addresses',
+                  children: [
+                    CmdNode.keyword(
+                      'dynamic',
+                      'Learned entries only',
+                      run: (ctx) => sw.macTable.clear(),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+      CliMode.globalConfig: [
+        CmdNode.keyword(
+          'ip',
+          'IP settings',
+          children: [
+            CmdNode.keyword(
+              'default-gateway',
+              'Router used to reach other subnets',
+              negate: (ctx) => sw.svi.gateway = null,
+              children: [
+                CmdNode.arg(
+                  const Ipv4Arg('gateway'),
+                  'Gateway address',
+                  run: (ctx) =>
+                      sw.svi.gateway = ctx.arg<Ipv4Address>('gateway'),
+                  negate: (ctx) => sw.svi.gateway = null,
+                ),
+              ],
+            ),
+          ],
+        ),
+        CmdNode.keyword(
+          'spanning-tree',
+          'Spanning tree settings',
+          children: [
+            CmdNode.keyword(
+              'vlan',
+              'Settings for a VLAN',
+              children: [
+                _vlanIdArg(
+                  'VLAN (one instance covers all VLANs in this version)',
+                  children: [
+                    CmdNode.keyword(
+                      'priority',
+                      'Bridge priority; the lowest becomes root',
+                      negate: (ctx) =>
+                          sw.stp.priority = SpanningTree.defaultPriority,
+                      children: [
+                        CmdNode.arg(
+                          const IntArg('priority', 0, 61440),
+                          'Multiple of 4096',
+                          run: (ctx) => _setPriority(ctx, sw),
+                          negate: (ctx) =>
+                              sw.stp.priority = SpanningTree.defaultPriority,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+        CmdNode.keyword(
+          'vlan',
+          'Create or configure a VLAN',
+          children: [
+            _vlanIdArg(
+              'VLAN ID',
+              run: (ctx) {
+                final vlan = ctx.arg<int>('vlan');
+                sw.createVlan(vlan);
+                ctx.session
+                  ..target = vlan
+                  ..mode = CliMode.vlanConfig;
+              },
+              negate: (ctx) {
+                final vlan = ctx.arg<int>('vlan');
+                if (vlan == 1) {
+                  ctx.writeln(
+                    '% VLAN 1 is the default VLAN and cannot be deleted',
+                  );
+                } else {
+                  sw.deleteVlan(vlan);
+                }
+              },
+            ),
+          ],
+        ),
+      ],
+      CliMode.interfaceConfig: [
+        CmdNode.keyword(
+          'description',
+          'Add a note to this interface',
+          negate: (ctx) => _setDescription(ctx, sw, null),
+          children: [
+            CmdNode.arg(
+              const LineArg('text'),
+              'Up to 240 characters',
+              run: (ctx) => _setDescription(ctx, sw, ctx.arg<String>('text')),
+              negate: (ctx) => _setDescription(ctx, sw, null),
+            ),
+          ],
+        ),
+        CmdNode.keyword(
+          'ip',
+          'IP settings',
+          children: [
+            CmdNode.keyword(
+              'address',
+              'Set the IP address',
+              negate: (ctx) => _setAddress(ctx, sw, clear: true),
+              children: [
+                CmdNode.arg(
+                  const Ipv4Arg('address'),
+                  'IP address',
+                  children: [
+                    CmdNode.arg(
+                      const Ipv4Arg('mask'),
+                      'Subnet mask',
+                      run: (ctx) => _setAddress(ctx, sw, clear: false),
+                      negate: (ctx) => _setAddress(ctx, sw, clear: true),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+        CmdNode.keyword(
+          'shutdown',
+          'Disable this interface',
+          run: (ctx) => _setAdmin(ctx, sw, up: false),
+          negate: (ctx) => _setAdmin(ctx, sw, up: true),
+        ),
+        CmdNode.keyword(
+          'spanning-tree',
+          'Spanning tree settings for this port',
+          children: [
+            CmdNode.keyword(
+              'portfast',
+              'Forward at once when up; for ports to a single host',
+              run: (ctx) => _withPort(ctx, (port) {
+                sw.stp.portfast.add(port);
+                ctx.warn(
+                  '% Portfast is on for ${port.name}. Connect only one host '
+                  'here: a loop through this port is not blocked while it '
+                  'comes up.',
+                );
+              }),
+              negate: (ctx) =>
+                  _withPort(ctx, (port) => sw.stp.portfast.remove(port)),
+            ),
+          ],
+        ),
+        CmdNode.keyword(
+          'switchport',
+          'Layer 2 port settings',
+          children: _switchportNodes(sw),
+        ),
+      ],
+      CliMode.vlanConfig: [
+        CmdNode.keyword(
+          'name',
+          'Name this VLAN',
+          negate: (ctx) {
+            final vlan = ctx.session.target! as int;
+            sw.vlans[vlan] = L2Switch.defaultVlanName(vlan);
+          },
+          children: [
+            CmdNode.arg(
+              const WordArg('name'),
+              'Up to 32 characters',
+              run: (ctx) {
+                final name = ctx.arg<String>('name');
+                if (name.length > 32) {
+                  ctx.writeln('% VLAN names are at most 32 characters');
+                  return;
+                }
+                sw.vlans[ctx.session.target! as int] = name;
+              },
+            ),
+          ],
+        ),
+      ],
+    },
+  );
+}
+
+List<CmdNode> _switchportNodes(L2Switch sw) {
+  void config(CommandContext ctx, void Function(SwitchportConfig c) change) =>
+      _withPort(ctx, (port) {
+        change(sw.switchport(port));
+        sw.macTable.flushPort(port);
+      });
+
+  void setAllowed(CommandContext ctx, VlanSet Function(VlanSet now) change) =>
+      config(ctx, (c) => c.allowed = change(c.allowed));
+
+  return [
+    CmdNode.keyword(
+      'access',
+      'Settings used in access mode',
+      children: [
+        CmdNode.keyword(
+          'vlan',
+          'VLAN for untagged traffic on this port',
+          negate: (ctx) => config(ctx, (c) => c.accessVlan = 1),
+          children: [
+            _vlanIdArg(
+              'VLAN ID',
+              run: (ctx) {
+                final vlan = ctx.arg<int>('vlan');
+                if (!sw.vlans.containsKey(vlan)) {
+                  ctx.writeln('% VLAN $vlan did not exist; created it');
+                  sw.createVlan(vlan);
+                }
+                config(ctx, (c) => c.accessVlan = vlan);
+              },
+              negate: (ctx) => config(ctx, (c) => c.accessVlan = 1),
             ),
           ],
         ),
       ],
     ),
     CmdNode.keyword(
-      'mac',
-      'MAC address information',
+      'mode',
+      'Access (one VLAN) or trunk (many, tagged)',
+      negate: (ctx) => config(ctx, (c) => c.mode = SwitchportMode.access),
       children: [
         CmdNode.keyword(
-          'address-table',
-          'Addresses this switch has learned',
-          run: (ctx) => ctx.write(showMacAddressTable(sw)),
+          'access',
+          'Carry one VLAN, untagged',
+          run: (ctx) => config(ctx, (c) => c.mode = SwitchportMode.access),
+        ),
+        CmdNode.keyword(
+          'trunk',
+          'Carry many VLANs with 802.1Q tags',
+          run: (ctx) => config(ctx, (c) => c.mode = SwitchportMode.trunk),
         ),
       ],
     ),
-    if (privileged) ...[
-      CmdNode.keyword(
-        'running-config',
-        'Configuration currently in effect',
-        run: (ctx) => ctx.write(showRunningConfig(sw)),
-      ),
-      CmdNode.keyword(
-        'startup-config',
-        'Configuration saved for the next start',
-        run: (ctx) {
-          final saved = sw.startupConfig;
-          ctx.write(saved ?? 'startup-config is not present\n');
-        },
-      ),
-    ],
+    CmdNode.keyword(
+      'trunk',
+      'Settings used in trunk mode',
+      children: [
+        CmdNode.keyword(
+          'allowed',
+          'VLANs this trunk carries',
+          children: [
+            CmdNode.keyword(
+              'vlan',
+              'VLAN list',
+              negate: (ctx) => setAllowed(ctx, (_) => VlanSet.all()),
+              children: [
+                CmdNode.arg(
+                  const VlanListArg('vlans'),
+                  'VLAN IDs, e.g. 10,20,30-40',
+                  run: (ctx) =>
+                      setAllowed(ctx, (_) => ctx.arg<VlanSet>('vlans')),
+                ),
+                CmdNode.keyword(
+                  'add',
+                  'Add to the current list',
+                  children: [
+                    CmdNode.arg(
+                      const VlanListArg('vlans'),
+                      'VLAN IDs to add',
+                      run: (ctx) => setAllowed(
+                        ctx,
+                        (now) => now.union(ctx.arg<VlanSet>('vlans')),
+                      ),
+                    ),
+                  ],
+                ),
+                CmdNode.keyword(
+                  'all',
+                  'Every VLAN',
+                  run: (ctx) => setAllowed(ctx, (_) => VlanSet.all()),
+                ),
+                CmdNode.keyword(
+                  'none',
+                  'No VLANs',
+                  run: (ctx) => setAllowed(ctx, (_) => VlanSet(const [])),
+                ),
+                CmdNode.keyword(
+                  'remove',
+                  'Remove from the current list',
+                  children: [
+                    CmdNode.arg(
+                      const VlanListArg('vlans'),
+                      'VLAN IDs to remove',
+                      run: (ctx) => setAllowed(
+                        ctx,
+                        (now) => now.minus(ctx.arg<VlanSet>('vlans')),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+        CmdNode.keyword(
+          'native',
+          'Untagged VLAN on this trunk',
+          children: [
+            CmdNode.keyword(
+              'vlan',
+              'Native VLAN ID',
+              negate: (ctx) => config(ctx, (c) => c.nativeVlan = 1),
+              children: [
+                _vlanIdArg(
+                  'VLAN ID',
+                  run: (ctx) =>
+                      config(ctx, (c) => c.nativeVlan = ctx.arg<int>('vlan')),
+                  negate: (ctx) => config(ctx, (c) => c.nativeVlan = 1),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ],
+    ),
   ];
+}
 
-  final exitNode = CmdNode.keyword(
-    'exit',
-    'Leave the current mode',
-    run: (ctx) {
-      final session = ctx.session;
-      session.mode = switch (session.mode) {
-        CliMode.interfaceConfig => CliMode.globalConfig,
-        CliMode.globalConfig => CliMode.privilegedExec,
-        _ => CliMode.userExec,
-      };
-      if (session.mode != CliMode.interfaceConfig) session.target = null;
-    },
-  );
-
-  final endNode = CmdNode.keyword(
-    'end',
-    'Leave configuration mode',
-    run: (ctx) => ctx.session.ctrlZ(),
-  );
-
-  final interfaceNode = CmdNode.keyword(
-    'interface',
-    'Select an interface to configure',
-    children: [
-      CmdNode.arg(
-        const InterfaceArg('interface', _interfaceTypes),
-        '',
-        run: (ctx) => _selectInterface(ctx, sw),
-      ),
-    ],
-  );
-
-  void saveConfig(CommandContext ctx) {
-    ctx.writeln('Building configuration...');
-    sw.startupConfig = renderConfig(sw);
-    ctx.writeln('[OK]');
+/// Runs [action] on the selected physical port, or explains why not.
+void _withPort(CommandContext ctx, void Function(Port port) action) {
+  switch (ctx.session.target) {
+    case PhysicalInterface(:final port):
+      action(port);
+    default:
+      ctx.writeln('% Not available on a VLAN interface');
   }
+}
 
-  return CommandSet({
-    CliMode.userExec: [
-      CmdNode.keyword(
-        'enable',
-        'Enter privileged mode',
-        run: (ctx) => ctx.session.mode = CliMode.privilegedExec,
-      ),
-      exitNode,
-      ping,
-      CmdNode.keyword(
-        'show',
-        'Display device status',
-        children: showChildren(privileged: false),
-      ),
-    ],
-    CliMode.privilegedExec: [
-      CmdNode.keyword(
-        'clear',
-        'Reset counters or tables',
-        children: [
-          CmdNode.keyword(
-            'mac',
-            'MAC address tables',
-            children: [
-              CmdNode.keyword(
-                'address-table',
-                'Forget learned addresses',
-                children: [
-                  CmdNode.keyword(
-                    'dynamic',
-                    'Learned entries only',
-                    run: (ctx) => sw.macTable.clear(),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ],
-      ),
-      CmdNode.keyword(
-        'configure',
-        'Enter configuration mode',
-        children: [
-          CmdNode.keyword(
-            'terminal',
-            'Configure from this terminal',
-            run: (ctx) {
-              ctx.writeln(
-                'Enter configuration commands, one per line.  '
-                'End with CNTL/Z.',
-              );
-              ctx.session.mode = CliMode.globalConfig;
-            },
-          ),
-        ],
-      ),
-      CmdNode.keyword(
-        'copy',
-        'Copy a configuration',
-        children: [
-          CmdNode.keyword(
-            'running-config',
-            'Configuration currently in effect',
-            children: [
-              CmdNode.keyword(
-                'startup-config',
-                'Save it for the next start',
-                run: saveConfig,
-              ),
-            ],
-          ),
-        ],
-      ),
-      CmdNode.keyword(
-        'disable',
-        'Return to user mode',
-        run: (ctx) => ctx.session.mode = CliMode.userExec,
-      ),
-      exitNode,
-      ping,
-      CmdNode.keyword(
-        'show',
-        'Display device status',
-        children: showChildren(privileged: true),
-      ),
-      CmdNode.keyword(
-        'write',
-        'Save the running configuration',
-        run: saveConfig,
-        children: [
-          CmdNode.keyword(
-            'memory',
-            'Save it for the next start',
-            run: saveConfig,
-          ),
-        ],
-      ),
-    ],
-    CliMode.globalConfig: [
-      endNode,
-      exitNode,
-      CmdNode.keyword(
-        'hostname',
-        'Set the device name',
-        negate: (ctx) => sw.hostname = L2Switch.defaultHostname,
-        children: [
-          CmdNode.arg(
-            const WordArg('name'),
-            'New device name',
-            run: (ctx) => _setHostname(ctx, sw),
-          ),
-        ],
-      ),
-      CmdNode.keyword(
-        'ip',
-        'IP settings',
-        children: [
-          CmdNode.keyword(
-            'default-gateway',
-            'Router used to reach other subnets',
-            negate: (ctx) => sw.svi.gateway = null,
-            children: [
-              CmdNode.arg(
-                const Ipv4Arg('gateway'),
-                'Gateway address',
-                run: (ctx) => sw.svi.gateway = ctx.arg<Ipv4Address>('gateway'),
-                negate: (ctx) => sw.svi.gateway = null,
-              ),
-            ],
-          ),
-        ],
-      ),
-      interfaceNode,
-    ],
-    CliMode.interfaceConfig: [
-      CmdNode.keyword(
-        'description',
-        'Add a note to this interface',
-        negate: (ctx) => _setDescription(ctx, sw, null),
-        children: [
-          CmdNode.arg(
-            const LineArg('text'),
-            'Up to 240 characters',
-            run: (ctx) => _setDescription(ctx, sw, ctx.arg<String>('text')),
-            negate: (ctx) => _setDescription(ctx, sw, null),
-          ),
-        ],
-      ),
-      endNode,
-      exitNode,
-      interfaceNode,
-      CmdNode.keyword(
-        'ip',
-        'IP settings',
-        children: [
-          CmdNode.keyword(
-            'address',
-            'Set the IP address',
-            negate: (ctx) => _setAddress(ctx, sw, clear: true),
-            children: [
-              CmdNode.arg(
-                const Ipv4Arg('address'),
-                'IP address',
-                children: [
-                  CmdNode.arg(
-                    const Ipv4Arg('mask'),
-                    'Subnet mask',
-                    run: (ctx) => _setAddress(ctx, sw, clear: false),
-                    negate: (ctx) => _setAddress(ctx, sw, clear: true),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ],
-      ),
-      CmdNode.keyword(
-        'shutdown',
-        'Disable this interface',
-        run: (ctx) => _setAdmin(ctx, sw, up: false),
-        negate: (ctx) => _setAdmin(ctx, sw, up: true),
-      ),
-    ],
-  });
+void _setPriority(CommandContext ctx, L2Switch sw) {
+  if (ctx.arg<int>('vlan') != 1) {
+    ctx.writeln(
+      '% One spanning tree instance covers all VLANs in this version; '
+      'set it with vlan 1',
+    );
+    return;
+  }
+  final priority = ctx.arg<int>('priority');
+  if (priority % 4096 != 0) {
+    ctx.writeln('% Bridge priority must be a multiple of 4096');
+    return;
+  }
+  sw.stp.priority = priority;
 }
 
 void _selectInterface(CommandContext ctx, L2Switch sw) {
@@ -335,20 +509,6 @@ void _selectInterface(CommandContext ctx, L2Switch sw) {
   ctx.session
     ..target = selected
     ..mode = CliMode.interfaceConfig;
-}
-
-final _hostnamePattern = RegExp(r'^[A-Za-z]([A-Za-z0-9-]{0,62})$');
-
-void _setHostname(CommandContext ctx, L2Switch sw) {
-  final name = ctx.arg<String>('name');
-  if (!_hostnamePattern.hasMatch(name)) {
-    ctx.writeln(
-      '% Hostnames start with a letter and use only letters, digits and '
-      'hyphens (max 63)',
-    );
-    return;
-  }
-  sw.hostname = name;
 }
 
 void _setDescription(CommandContext ctx, L2Switch sw, String? text) {
@@ -387,76 +547,47 @@ void _setAddress(CommandContext ctx, L2Switch sw, {required bool clear}) {
   }
   final address = ctx.arg<Ipv4Address>('address');
   final mask = ctx.arg<Ipv4Address>('mask');
-  if (mask.prefixLength == null) {
-    ctx.writeln('% $mask is not a valid subnet mask');
-    return;
+  if (checkInterfaceAddress(ctx, address, mask)) {
+    sw.svi.configure(address, mask);
   }
-  if (!address.isUsableHost(mask)) {
-    ctx.writeln('% $address is not a usable host address with mask $mask');
-    return;
-  }
-  sw.svi.configure(address, mask);
-}
-
-void _ping(CommandContext ctx, L2Switch sw) {
-  final target = ctx.arg<Ipv4Address>('target');
-  if (!sw.svi.isConfigured) {
-    ctx.writeln('% Cannot ping: this switch has no IP address configured');
-    return;
-  }
-  const count = 5, size = 100;
-  final session = ctx.session..busy = true;
-  final rtts = <int>[];
-  ctx
-    ..writeln('Type escape sequence to abort.')
-    ..writeln(
-      'Sending $count, $size-byte ICMP Echos to $target, '
-      'timeout is 2 seconds:',
-    );
-  sw.svi.ping(
-    target,
-    count: count,
-    size: size,
-    timeout: 2000,
-    onResult: (result) {
-      if (result.ok) rtts.add(result.rtt!);
-      ctx.write(switch (result.status) {
-        PingStatus.reply => '!',
-        PingStatus.timeout || PingStatus.noRoute => '.',
-      });
-    },
-    onDone: () {
-      final percent = rtts.length * 100 ~/ count;
-      final summary = StringBuffer(
-        'Success rate is $percent percent (${rtts.length}/$count)',
-      );
-      if (rtts.isNotEmpty) {
-        final min = rtts.reduce((a, b) => a < b ? a : b);
-        final max = rtts.reduce((a, b) => a > b ? a : b);
-        final avg = rtts.reduce((a, b) => a + b) ~/ rtts.length;
-        summary.write(', round-trip min/avg/max = $min/$avg/$max ms');
-      }
-      ctx
-        ..writeln()
-        ..writeln(summary.toString());
-      session.busy = false;
-    },
-  );
 }
 
 /// The configuration body, from the first `!` to `end`. Replaying these lines
 /// in global configuration mode rebuilds the same state.
-String renderConfig(L2Switch sw) {
+String renderSwitchConfig(L2Switch sw) {
   final out = StringBuffer()
     ..writeln('!')
     ..writeln('hostname ${sw.hostname}')
     ..writeln('!');
+  if (sw.stp.priority != SpanningTree.defaultPriority) {
+    out
+      ..writeln('spanning-tree vlan 1 priority ${sw.stp.priority}')
+      ..writeln('!');
+  }
+  for (final MapEntry(key: vlan, value: name) in sw.vlans.entries) {
+    if (vlan == 1) continue;
+    out.writeln('vlan $vlan');
+    if (name != L2Switch.defaultVlanName(vlan)) out.writeln(' name $name');
+    out.writeln('!');
+  }
   for (final port in sw.ports) {
+    final config = sw.switchport(port);
     out.writeln('interface ${port.name}');
     if (port.description != null) {
       out.writeln(' description ${port.description}');
     }
+    if (config.accessVlan != 1) {
+      out.writeln(' switchport access vlan ${config.accessVlan}');
+    }
+    if (config.nativeVlan != 1) {
+      out.writeln(' switchport trunk native vlan ${config.nativeVlan}');
+    }
+    if (!config.allowed.isAll) {
+      out.writeln(' switchport trunk allowed vlan ${config.allowed.format()}');
+    }
+    if (config.isTrunk) out.writeln(' switchport mode trunk');
     if (!port.adminUp) out.writeln(' shutdown');
+    if (sw.stp.portfast.contains(port)) out.writeln(' spanning-tree portfast');
     out.writeln('!');
   }
   out.writeln('interface Vlan${L2Switch.managementVlan}');
@@ -470,8 +601,9 @@ String renderConfig(L2Switch sw) {
         : ' ip address $address $mask',
   );
   // Vlan1 defaults to shut down, so the enabled state must be written out.
-  out.writeln(sw.sviAdminUp ? ' no shutdown' : ' shutdown');
-  out.writeln('!');
+  out
+    ..writeln(sw.sviAdminUp ? ' no shutdown' : ' shutdown')
+    ..writeln('!');
   final gateway = sw.svi.gateway;
   if (gateway != null) {
     out
@@ -482,79 +614,33 @@ String renderConfig(L2Switch sw) {
   return out.toString();
 }
 
-/// Replays [config] (as produced by [renderConfig]) through the CLI, the same
-/// path a user's typing takes. Returns any error output; empty means clean.
-String applyConfig(L2Switch sw, String config) {
-  final errors = StringBuffer();
-  final session = sw.openCli(errors.write)..mode = CliMode.globalConfig;
-  for (final line in config.split('\n')) {
-    if (session.mode == CliMode.privilegedExec) break;
-    session.execute(line);
-  }
-  return errors.toString();
-}
-
-String showRunningConfig(L2Switch sw) {
-  final body = renderConfig(sw);
-  return 'Building configuration...\n\n'
-      'Current configuration : ${body.length} bytes\n'
-      '$body';
-}
-
 String showIpInterfaceBrief(L2Switch sw) {
-  final out = StringBuffer()
-    ..writeln(
-      _briefRow(
-        'Interface',
-        'IP-Address',
-        'OK?',
-        'Method',
-        'Status',
-        'Protocol',
-      ),
-    );
-  String status(bool adminUp, bool up) => !adminUp
-      ? 'administratively down'
-      : up
-      ? 'up'
-      : 'down';
+  final out = StringBuffer()..writeln(briefHeader());
   for (final port in sw.ports) {
     out.writeln(
-      _briefRow(
+      briefRow(
         port.name,
         'unassigned',
         'YES',
         'unset',
-        status(port.adminUp, port.isUp),
+        interfaceStatus(adminUp: port.adminUp, up: port.isUp),
         port.isUp ? 'up' : 'down',
       ),
     );
   }
   final address = sw.svi.address;
   out.writeln(
-    _briefRow(
+    briefRow(
       'Vlan${L2Switch.managementVlan}',
       address?.toString() ?? 'unassigned',
       'YES',
       address == null ? 'unset' : 'manual',
-      status(sw.sviAdminUp, sw.sviIsUp),
+      interfaceStatus(adminUp: sw.sviAdminUp, up: sw.sviIsUp),
       sw.sviIsUp ? 'up' : 'down',
     ),
   );
   return out.toString();
 }
-
-String _briefRow(
-  String name,
-  String address,
-  String ok,
-  String method,
-  String status,
-  String protocol,
-) =>
-    '${name.padRight(23)}${address.padRight(16)}${ok.padRight(4)}'
-            '${method.padRight(7)}${status.padRight(22)}$protocol'
-        .trimRight();
 
 String showMacAddressTable(L2Switch sw) {
   final entries = sw.macTable.entries;
@@ -571,5 +657,151 @@ String showMacAddressTable(L2Switch sw) {
     );
   }
   out.writeln('Total Mac Addresses for this criterion: ${entries.length}');
+  return out.toString();
+}
+
+String showVlanBrief(L2Switch sw) {
+  const portsWidth = 31;
+  final out = StringBuffer()
+    ..writeln('VLAN Name                             Status    Ports')
+    ..writeln(
+      '---- -------------------------------- --------- '
+      '${'-' * portsWidth}',
+    );
+  for (final MapEntry(key: vlan, value: name) in sw.vlans.entries) {
+    final members = [
+      for (final port in sw.ports)
+        if (!sw.switchport(port).isTrunk &&
+            sw.switchport(port).accessVlan == vlan)
+          port.shortName,
+    ];
+    final lines = <String>[];
+    var line = '';
+    for (final member in members) {
+      final next = line.isEmpty ? member : '$line, $member';
+      if (next.length > portsWidth) {
+        lines.add('$line,');
+        line = member;
+      } else {
+        line = next;
+      }
+    }
+    if (line.isNotEmpty) lines.add(line);
+    final head =
+        '${'$vlan'.padRight(5)}${name.padRight(33)}${'active'.padRight(10)}';
+    out.writeln('$head${lines.isEmpty ? '' : lines.first}'.trimRight());
+    for (final rest in lines.skip(1)) {
+      out.writeln('${' ' * head.length}$rest');
+    }
+  }
+  return out.toString();
+}
+
+String showInterfacesTrunk(L2Switch sw) {
+  final trunks = [
+    for (final port in sw.ports)
+      if (port.isUp && sw.switchport(port).isTrunk) port,
+  ];
+  if (trunks.isEmpty) return '';
+  String row(String port, String rest) => '${port.padRight(12)}$rest';
+  final out = StringBuffer()
+    ..writeln()
+    ..writeln(
+      row(
+        'Port',
+        '${'Mode'.padRight(17)}${'Encapsulation'.padRight(15)}'
+            '${'Status'.padRight(14)}Native vlan',
+      ),
+    );
+  for (final port in trunks) {
+    out.writeln(
+      row(
+        port.shortName,
+        '${'on'.padRight(17)}${'802.1q'.padRight(15)}'
+        '${'trunking'.padRight(14)}${sw.switchport(port).nativeVlan}',
+      ),
+    );
+  }
+  void section(String title, String Function(Port port) vlans) {
+    out
+      ..writeln()
+      ..writeln(row('Port', title));
+    for (final port in trunks) {
+      out.writeln(row(port.shortName, vlans(port)));
+    }
+  }
+
+  VlanSet active(Port port) =>
+      sw.switchport(port).allowed.intersect(sw.vlans.keys);
+  section('Vlans allowed on trunk', (p) => sw.switchport(p).allowed.format());
+  section(
+    'Vlans allowed and active in management domain',
+    (p) => active(p).format(),
+  );
+  section(
+    'Vlans in spanning tree forwarding state and not pruned',
+    (p) => sw.stp.forwards(p) ? active(p).format() : 'none',
+  );
+  return out.toString();
+}
+
+String showSpanningTree(L2Switch sw) {
+  final stp = sw.stp;
+  final timers =
+      '             Hello Time   ${SpanningTree.helloTime ~/ 1000} sec  '
+      'Max Age  ${SpanningTree.maxAge ~/ 1000} sec  '
+      'Forward Delay  ${SpanningTree.forwardDelay ~/ 1000} sec';
+  final out = StringBuffer()
+    ..writeln('VLAN0001')
+    ..writeln('  Spanning tree enabled protocol ieee')
+    ..writeln('  (one spanning tree instance is shared by all VLANs)')
+    ..writeln('  Root ID    Priority    ${stp.rootId.priority}')
+    ..writeln('             Address     ${stp.rootId.mac.toDotted()}');
+  final rootPort = stp.rootPort;
+  if (rootPort == null) {
+    out.writeln('             This bridge is the root');
+  } else {
+    out
+      ..writeln('             Cost        ${stp.rootCost}')
+      ..writeln(
+        '             Port        ${rootPort.index} (${rootPort.name})',
+      );
+  }
+  out
+    ..writeln(timers)
+    ..writeln()
+    ..writeln(
+      '  Bridge ID  Priority    ${stp.bridgeId.priority}  '
+      '(priority ${stp.priority} sys-id-ext 1)',
+    )
+    ..writeln('             Address     ${stp.bridgeId.mac.toDotted()}')
+    ..writeln(timers)
+    ..writeln()
+    ..writeln('Interface           Role Sts Cost      Prio.Nbr Type')
+    ..writeln(
+      '------------------- ---- --- --------- -------- '
+      '--------------------------------',
+    );
+  for (final port in sw.ports) {
+    final role = stp.role(port);
+    if (role == StpRole.disabled) continue;
+    final roleText = switch (role) {
+      StpRole.root => 'Root',
+      StpRole.designated => 'Desg',
+      StpRole.alternate || StpRole.disabled => 'Altn',
+    };
+    final state = switch (stp.state(port)) {
+      StpState.blocking || StpState.disabled => 'BLK',
+      StpState.listening => 'LIS',
+      StpState.learning => 'LRN',
+      StpState.forwarding => 'FWD',
+    };
+    out.writeln(
+      '${port.shortName.padRight(20)}${roleText.padRight(5)}'
+      '${state.padRight(4)}${'${SpanningTree.costFor(port)}'.padRight(10)}'
+      '${'${SpanningTree.portPriority}.${port.index}'.padRight(9)}'
+      'P2p${stp.portfast.contains(port) ? ' Edge' : ''}',
+    );
+  }
   return out.toString();
 }
