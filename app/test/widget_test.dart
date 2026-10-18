@@ -3,8 +3,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketroute/main.dart';
 import 'package:pocketroute/src/lab/lab_controller.dart';
 import 'package:pocketroute/src/lab/lab_store.dart';
+import 'package:pocketroute/src/settings.dart';
+import 'package:pocketroute/src/ui/console_window.dart';
 import 'package:pocketroute/src/ui/lab_screen.dart';
 import 'package:pocketroute_core/pocketroute_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   testWidgets('shell shows the menu bar, palette and status bar', (
@@ -53,6 +56,35 @@ void main() {
     expect(find.text('CLI'), findsOneWidget);
     expect(find.byTooltip('Dock below the canvas'), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('an upright phone lays out with the console at the bottom', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(411, 914);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const PocketRouteApp());
+    final state = tester.state(find.byType(LabScreen)) as dynamic;
+    final lab = state.lab as LabController;
+    final sw = lab.addDevice(DeviceKind.l2switch, const Offset(200, 200));
+    lab.openConsole(sw, near: Offset.zero);
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+
+    // The console spans the width, below the canvas's top part.
+    final sheet = tester.getRect(find.byType(ConsoleWindowView));
+    expect(sheet.width, greaterThan(300));
+    expect(sheet.top, greaterThan(300));
+  });
+
+  test('the screen orientation choice is saved', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    SharedPreferences.setMockInitialValues({});
+    expect((await AppSettings.load()).orientation, ScreenOrientation.landscape);
+    await AppSettings().setOrientation(ScreenOrientation.portrait);
+    expect((await AppSettings.load()).orientation, ScreenOrientation.portrait);
   });
 
   testWidgets('every starter lab opens in the lab controller', (tester) async {

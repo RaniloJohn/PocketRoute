@@ -242,41 +242,50 @@ class _Markdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final blocks = <Widget>[];
+    // Lines wrapped in the source join up so the text reflows to the
+    // dialog width: (list marker or null, text) per paragraph or item.
+    final items = <(String?, String)>[];
+    var open = false;
+    final listItem = RegExp(r'^(- |\d+\. )');
     for (final raw in text.split('\n')) {
       final line = raw.trimRight();
+      final match = listItem.firstMatch(line);
       if (line.isEmpty) {
-        blocks.add(const SizedBox(height: 8));
+        items.add((null, ''));
+        open = false;
       } else if (line.startsWith('# ')) {
         // The dialog title already shows the lab name.
-        continue;
-      } else if (RegExp(r'^(- |\d+\. )').hasMatch(line)) {
-        final match = RegExp(r'^(- |\d+\. )').firstMatch(line)!;
+        open = false;
+      } else if (match != null) {
         final marker = match[0]!.startsWith('-') ? '•' : match[0]!.trim();
-        blocks.add(
+        items.add((marker, line.substring(match.end)));
+        open = true;
+      } else if (open) {
+        final (marker, before) = items.removeLast();
+        items.add((marker, '$before ${line.trim()}'));
+      } else {
+        items.add((null, line));
+        open = true;
+      }
+    }
+    final blocks = <Widget>[
+      for (final (marker, body) in items)
+        if (marker == null && body.isEmpty)
+          const SizedBox(height: 8)
+        else if (marker == null)
+          _inline(body)
+        else
           Padding(
             padding: const EdgeInsets.only(left: 4, top: 2),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 SizedBox(width: 20, child: Text(marker, style: _body)),
-                Expanded(child: _inline(line.substring(match.end))),
+                Expanded(child: _inline(body)),
               ],
             ),
           ),
-        );
-      } else if (line.startsWith('   ') && blocks.isNotEmpty) {
-        // Continuation of a list item.
-        blocks.add(
-          Padding(
-            padding: const EdgeInsets.only(left: 24),
-            child: _inline(line.trim()),
-          ),
-        );
-      } else {
-        blocks.add(_inline(line));
-      }
-    }
+    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: blocks,

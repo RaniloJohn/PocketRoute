@@ -9,24 +9,44 @@ import '../theme.dart';
 import 'device_glyph.dart';
 import 'simulation_panel.dart';
 
-/// Grid, dots or nothing, behind everything.
+/// Grid, dots or nothing, behind everything. Painted in view space so it
+/// fills the canvas at any zoom; [transform] maps scene to view.
 class GridPainter extends CustomPainter {
-  GridPainter(this.pattern, this.colors);
+  GridPainter(this.pattern, this.colors, this.transform)
+    : super(repaint: transform);
 
   final CanvasPattern pattern;
   final CanvasColors colors;
+  final TransformationController transform;
+
+  static const _step = 20.0;
 
   @override
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = colors.background);
+    if (pattern == CanvasPattern.plain) return;
+    final m = transform.value;
+    final scale = m.storage[0];
+    final origin = Offset(m.storage[12], m.storage[13]);
+    // Scene-space grid lines that fall inside the view.
+    Iterable<double> lines(double from, double to) sync* {
+      final first = ((from / scale) / _step).floor() * _step;
+      for (var s = first; s * scale <= to; s += _step) {
+        yield s;
+      }
+    }
+
+    final xs = lines(-origin.dx, size.width - origin.dx).toList();
+    final ys = lines(-origin.dy, size.height - origin.dy).toList();
+    bool isMajor(double s) => (s / _step).round() % 5 == 0;
     switch (pattern) {
       case CanvasPattern.plain:
         return;
       case CanvasPattern.dots:
         final paint = Paint()..color = colors.major;
-        for (var x = 0.0; x <= size.width; x += 20) {
-          for (var y = 0.0; y <= size.height; y += 20) {
-            canvas.drawCircle(Offset(x, y), 1.3, paint);
+        for (final x in xs) {
+          for (final y in ys) {
+            canvas.drawCircle(origin + Offset(x, y) * scale, 1.3, paint);
           }
         }
       case CanvasPattern.grid:
@@ -36,18 +56,20 @@ class GridPainter extends CustomPainter {
         final major = Paint()
           ..color = colors.major
           ..strokeWidth = 1;
-        for (var x = 0.0; x <= size.width; x += 20) {
+        for (final x in xs) {
+          final vx = (origin.dx + x * scale).floorToDouble() + 0.5;
           canvas.drawLine(
-            Offset(x + 0.5, 0),
-            Offset(x + 0.5, size.height),
-            x % 100 == 0 ? major : minor,
+            Offset(vx, 0),
+            Offset(vx, size.height),
+            isMajor(x) ? major : minor,
           );
         }
-        for (var y = 0.0; y <= size.height; y += 20) {
+        for (final y in ys) {
+          final vy = (origin.dy + y * scale).floorToDouble() + 0.5;
           canvas.drawLine(
-            Offset(0, y + 0.5),
-            Offset(size.width, y + 0.5),
-            y % 100 == 0 ? major : minor,
+            Offset(0, vy),
+            Offset(size.width, vy),
+            isMajor(y) ? major : minor,
           );
         }
     }
@@ -55,7 +77,9 @@ class GridPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(GridPainter old) =>
-      old.pattern != pattern || old.colors.background != colors.background;
+      old.pattern != pattern ||
+      old.colors.background != colors.background ||
+      old.transform != transform;
 }
 
 /// Geometry of one drawn cable.

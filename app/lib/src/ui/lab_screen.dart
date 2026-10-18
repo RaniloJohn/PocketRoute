@@ -8,13 +8,16 @@ import '../theme.dart';
 import 'canvas_view.dart';
 import 'console_window.dart';
 import '../lab/lab_store.dart';
+import '../settings.dart';
 import 'device_glyph.dart';
 import 'file_actions.dart';
 import 'simulation_panel.dart';
 
 /// The tablet layout: menu bar, palette, canvas with consoles, status bar.
 class LabScreen extends StatefulWidget {
-  const LabScreen({super.key});
+  const LabScreen({super.key, required this.settings});
+
+  final AppSettings settings;
 
   @override
   State<LabScreen> createState() => _LabScreenState();
@@ -89,7 +92,7 @@ class _LabScreenState extends State<LabScreen>
     final target = (scale * factor).clamp(0.3, 2.5) / scale;
     transform.value = Matrix4.identity()
       ..translateByDouble(centre.dx, centre.dy, 0, 1)
-      ..scaleByDouble(target, target, 1, 1)
+      ..scaleByDouble(target, target, target, 1)
       ..translateByDouble(-centre.dx, -centre.dy, 0, 1)
       ..multiply(transform.value);
     setState(() {});
@@ -127,7 +130,7 @@ class _LabScreenState extends State<LabScreen>
     final dy = _canvasSize.height / 2 - bounds.center.dy * scale;
     transform.value = Matrix4.identity()
       ..translateByDouble(dx, dy, 0, 1)
-      ..scaleByDouble(scale, scale, 1, 1);
+      ..scaleByDouble(scale, scale, scale, 1);
     setState(() {});
   }
 
@@ -143,7 +146,7 @@ class _LabScreenState extends State<LabScreen>
     return Scaffold(
       body: SafeArea(
         child: ListenableBuilder(
-          listenable: lab,
+          listenable: Listenable.merge([lab, widget.settings]),
           builder: (context, _) {
             final docked = compact
                 ? null
@@ -156,6 +159,7 @@ class _LabScreenState extends State<LabScreen>
                   lab: lab,
                   compact: compact,
                   files: _files,
+                  settings: widget.settings,
                   onNew: _newLab,
                   onAdd: (kind) => lab.addDevice(kind, _viewCentre),
                   onZoom: _zoom,
@@ -217,11 +221,19 @@ class _LabScreenState extends State<LabScreen>
   Widget _canvasArea({required bool compact}) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        final previous = _canvasSize;
         _canvasSize = constraints.biggest;
+        final portrait = _canvasSize.height > _canvasSize.width;
+        // Rotating the screen: refit so the topology is not left off-screen.
+        if (!previous.isEmpty &&
+            portrait != (previous.height > previous.width)) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _fit());
+        }
         final floating = compact
             ? const <ConsoleWindow>[]
             : lab.consoles.where((w) => w.mode == WindowMode.floating);
-        // On a phone the front console slides in from the right instead.
+        // On a phone the front console slides in from the right instead, or
+        // up from the bottom when the phone is upright.
         final sheet = compact
             ? lab.consoles
                   .where((w) => w.mode != WindowMode.minimized)
@@ -243,10 +255,12 @@ class _LabScreenState extends State<LabScreen>
               if (sheet != null)
                 Positioned(
                   key: ObjectKey(sheet),
-                  top: 0,
+                  top: portrait ? null : 0,
+                  left: portrait ? 0 : null,
                   right: 0,
                   bottom: 0,
-                  width: sheetWidth,
+                  width: portrait ? null : sheetWidth,
+                  height: portrait ? _canvasSize.height * 0.6 : null,
                   child: ConsoleWindowView(
                     lab: lab,
                     window: sheet,
@@ -266,8 +280,8 @@ class _LabScreenState extends State<LabScreen>
                     return Positioned(
                       left: pos.dx,
                       top: pos.dy,
-                      width: consoleSize.width,
-                      height: consoleSize.height,
+                      width: math.min(consoleSize.width, _canvasSize.width),
+                      height: math.min(consoleSize.height, _canvasSize.height),
                       child: ConsoleWindowView(
                         lab: lab,
                         window: window,
@@ -356,11 +370,13 @@ class _Header extends StatelessWidget {
     required this.onFit,
     required this.compact,
     required this.files,
+    required this.settings,
   });
 
   final LabController lab;
   final bool compact;
   final FileActions files;
+  final AppSettings settings;
   final VoidCallback onNew;
   final void Function(DeviceKind kind) onAdd;
   final void Function(double factor) onZoom;
@@ -372,103 +388,117 @@ class _Header extends StatelessWidget {
       context,
       lab,
       files: files,
+      settings: settings,
       onNew: onNew,
       onAdd: onAdd,
       onZoom: onZoom,
       onFit: onFit,
       nested: compact,
     );
+    // An upright phone: the tools get their own row under the title.
+    final upright = compact && MediaQuery.sizeOf(context).width < 600;
+    final menuButton = MenuAnchor(
+      menuChildren: menus,
+      builder: (context, controller, _) => TextButton.icon(
+        onPressed: () =>
+            controller.isOpen ? controller.close() : controller.open(),
+        style: TextButton.styleFrom(
+          foregroundColor: Tokens.text,
+          minimumSize: const Size(0, 36),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(Tokens.radius)),
+          ),
+        ),
+        icon: const Icon(Icons.menu, size: 18),
+        label: const Text(
+          'PocketRoute',
+          style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+        ),
+      ),
+    );
+    // On narrow screens the tool groups scroll rather than overflow.
+    final tools = SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      reverse: !upright,
+      child: Row(
+        children: [
+          _Segmented(
+            children: [
+              for (final (i, tool) in Tool.values.indexed)
+                _ChromeButton(
+                  label: _title(tool.name),
+                  compact: compact,
+                  first: i == 0,
+                  selected: lab.tool == tool,
+                  onTap: () => lab.setTool(tool),
+                ),
+            ],
+          ),
+          const SizedBox(width: 10),
+          _Segmented(
+            children: [
+              _ChromeButton(
+                label: 'Realtime',
+                first: true,
+                compact: compact,
+                selected: !lab.simulation,
+                onTap: () => lab.setRunning(true),
+              ),
+              _ChromeButton(
+                label: 'Simulation',
+                compact: compact,
+                selected: lab.simulation,
+                onTap: () => lab.setSimulation(true),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
     return Container(
-      height: compact ? 40 : 44,
+      height: upright ? 80 : (compact ? 40 : 44),
       padding: EdgeInsets.only(left: compact ? 4 : 14, right: 10),
       decoration: const BoxDecoration(
         color: Tokens.chrome,
         border: Border(bottom: BorderSide(color: Tokens.border)),
       ),
-      child: Row(
-        children: [
-          if (compact)
-            MenuAnchor(
-              menuChildren: menus,
-              builder: (context, controller, _) => TextButton.icon(
-                onPressed: () =>
-                    controller.isOpen ? controller.close() : controller.open(),
-                style: TextButton.styleFrom(
-                  foregroundColor: Tokens.text,
-                  minimumSize: const Size(0, 36),
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  shape: const RoundedRectangleBorder(
-                    borderRadius: BorderRadius.all(
-                      Radius.circular(Tokens.radius),
-                    ),
-                  ),
+      child: upright
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(height: 40, child: menuButton),
+                Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: SizedBox(height: 36, child: tools),
                 ),
-                icon: const Icon(Icons.menu, size: 18),
-                label: const Text(
-                  'PocketRoute',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-              ),
+              ],
             )
-          else ...[
-            const Text(
-              'PocketRoute',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(width: 10),
-            MenuBar(
-              style: const MenuStyle(
-                backgroundColor: WidgetStatePropertyAll(Colors.transparent),
-                elevation: WidgetStatePropertyAll(0),
-                shadowColor: WidgetStatePropertyAll(Colors.transparent),
-                padding: WidgetStatePropertyAll(EdgeInsets.zero),
-              ),
-              children: menus,
-            ),
-          ],
-          // On narrow screens the tool groups scroll rather than overflow.
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              reverse: true,
-              child: Row(
-                children: [
-                  _Segmented(
-                    children: [
-                      for (final (i, tool) in Tool.values.indexed)
-                        _ChromeButton(
-                          label: _title(tool.name),
-                          compact: compact,
-                          first: i == 0,
-                          selected: lab.tool == tool,
-                          onTap: () => lab.setTool(tool),
-                        ),
-                    ],
+          : Row(
+              children: [
+                if (compact)
+                  menuButton
+                else ...[
+                  const Text(
+                    'PocketRoute',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(width: 10),
-                  _Segmented(
-                    children: [
-                      _ChromeButton(
-                        label: 'Realtime',
-                        first: true,
-                        compact: compact,
-                        selected: !lab.simulation,
-                        onTap: () => lab.setRunning(true),
+                  MenuBar(
+                    style: const MenuStyle(
+                      backgroundColor: WidgetStatePropertyAll(
+                        Colors.transparent,
                       ),
-                      _ChromeButton(
-                        label: 'Simulation',
-                        compact: compact,
-                        selected: lab.simulation,
-                        onTap: () => lab.setSimulation(true),
-                      ),
-                    ],
+                      elevation: WidgetStatePropertyAll(0),
+                      shadowColor: WidgetStatePropertyAll(Colors.transparent),
+                      padding: WidgetStatePropertyAll(EdgeInsets.zero),
+                    ),
+                    children: menus,
                   ),
                 ],
-              ),
+                Expanded(child: tools),
+              ],
             ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -487,6 +517,7 @@ List<Widget> _menus(
   BuildContext context,
   LabController lab, {
   required FileActions files,
+  required AppSettings settings,
   required VoidCallback onNew,
   required void Function(DeviceKind kind) onAdd,
   required void Function(double factor) onZoom,
@@ -553,6 +584,19 @@ List<Widget> _menus(
       ),
     ]),
     menu('View', [
+      SubmenuButton(
+        menuChildren: [
+          for (final o in ScreenOrientation.values)
+            RadioMenuButton<ScreenOrientation>(
+              value: o,
+              groupValue: settings.orientation,
+              onChanged: (v) => settings.setOrientation(v!),
+              child: Text(o.label),
+            ),
+        ],
+        child: const Text('Screen orientation'),
+      ),
+      const Divider(height: 8),
       for (final p in CanvasPattern.values)
         RadioMenuButton<CanvasPattern>(
           value: p,
@@ -992,6 +1036,8 @@ class _StatusBar extends StatelessWidget {
       color: Tokens.border,
     );
     final minimized = lab.consoles.where((w) => w.mode == WindowMode.minimized);
+    // An upright phone has no room for the run mode; the header shows it.
+    final narrow = MediaQuery.sizeOf(context).width < 560;
     return Container(
       height: 28,
       padding: const EdgeInsets.only(left: 12, right: 6),
@@ -1001,51 +1047,13 @@ class _StatusBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Text(_title(_runMode(lab)), style: style),
-          rule(),
-          ValueListenableBuilder(
-            valueListenable: lab.ticks,
-            builder: (context, _, _) => Text(
-              _clock(lab.simMillis),
-              style: style.copyWith(fontFamily: Tokens.mono),
+          // Scrolls sideways rather than overflowing on narrow screens.
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(children: _info(lab, minimized, narrow, style, rule)),
             ),
           ),
-          rule(),
-          Text(
-            '${lab.nodes.length} devices, ${lab.network.links.length} cables',
-            style: style,
-          ),
-          if (minimized.isNotEmpty) rule(),
-          for (final window in minimized)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: OutlinedButton(
-                onPressed: () => lab.setWindowMode(window, WindowMode.floating),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size(0, 22),
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  backgroundColor: Colors.white,
-                  side: const BorderSide(color: Tokens.control),
-                  shape: const RoundedRectangleBorder(
-                    borderRadius: BorderRadius.all(Radius.circular(3)),
-                  ),
-                  textStyle: const TextStyle(fontSize: 11.5),
-                  foregroundColor: Tokens.ink,
-                ),
-                child: Text('${window.node.name} console'),
-              ),
-            ),
-          if (lab.message != null) ...[
-            rule(),
-            Expanded(
-              child: Text(
-                lab.message!,
-                style: style,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ] else
-            const Spacer(),
           IconButton(
             tooltip: 'Zoom out',
             onPressed: () => onZoom(0.8),
@@ -1085,6 +1093,50 @@ class _StatusBar extends StatelessWidget {
       ),
     );
   }
+
+  /// Run mode, clock, counts, minimized consoles and the latest message.
+  static List<Widget> _info(
+    LabController lab,
+    Iterable<ConsoleWindow> minimized,
+    bool narrow,
+    TextStyle style,
+    Widget Function() rule,
+  ) => [
+    if (!narrow) ...[Text(_title(_runMode(lab)), style: style), rule()],
+    ValueListenableBuilder(
+      valueListenable: lab.ticks,
+      builder: (context, _, _) => Text(
+        _clock(lab.simMillis),
+        style: style.copyWith(fontFamily: Tokens.mono),
+      ),
+    ),
+    rule(),
+    Text(
+      '${lab.nodes.length} devices, ${lab.network.links.length} cables',
+      style: style,
+    ),
+    if (minimized.isNotEmpty) rule(),
+    for (final window in minimized)
+      Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: OutlinedButton(
+          onPressed: () => lab.setWindowMode(window, WindowMode.floating),
+          style: OutlinedButton.styleFrom(
+            minimumSize: const Size(0, 22),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            backgroundColor: Colors.white,
+            side: const BorderSide(color: Tokens.control),
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(3)),
+            ),
+            textStyle: const TextStyle(fontSize: 11.5),
+            foregroundColor: Tokens.ink,
+          ),
+          child: Text('${window.node.name} console'),
+        ),
+      ),
+    if (lab.message != null) ...[rule(), Text(lab.message!, style: style)],
+  ];
 
   static String _clock(int millis) {
     final s = millis ~/ 1000;

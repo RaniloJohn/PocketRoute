@@ -26,14 +26,17 @@ class ConsoleWindowView extends StatelessWidget {
   /// The space windows live in (the canvas area).
   final Size area;
 
-  /// Phone layout: a sheet at the right edge; no dragging or docking.
+  /// Phone layout: a sheet at the right edge (bottom edge when upright); no
+  /// dragging or docking.
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final docked = window.mode == WindowMode.docked;
     final ShapeBorder shape = compact
-        ? const Border(left: BorderSide(color: Tokens.windowBorder))
+        ? area.height > area.width
+              ? const Border(top: BorderSide(color: Tokens.windowBorder))
+              : const Border(left: BorderSide(color: Tokens.windowBorder))
         : docked
         ? const Border(top: BorderSide(color: Tokens.windowBorder))
         : const RoundedRectangleBorder(

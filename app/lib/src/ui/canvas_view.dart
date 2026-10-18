@@ -35,48 +35,46 @@ class CanvasView extends StatelessWidget {
         final local = box.globalToLocal(details.offset);
         lab.addDevice(details.data, transform.toScene(local));
       },
-      builder: (context, candidates, rejected) => InteractiveViewer(
-        transformationController: transform,
-        constrained: false,
-        minScale: 0.3,
-        maxScale: 2.5,
-        boundaryMargin: const EdgeInsets.all(400),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTapUp: (d) => _onBackgroundTap(d.localPosition),
-          child: SizedBox.fromSize(
-            size: sceneSize,
-            child: ListenableBuilder(
-              listenable: lab,
-              builder: (context, _) => Stack(
-                children: [
-                  Positioned.fill(
-                    child: CustomPaint(
-                      painter: GridPainter(lab.pattern, lab.colors),
+      builder: (context, candidates, rejected) => CustomPaint(
+        painter: GridPainter(lab.pattern, lab.colors, transform),
+        child: InteractiveViewer(
+          transformationController: transform,
+          constrained: false,
+          minScale: 0.3,
+          maxScale: 2.5,
+          boundaryMargin: const EdgeInsets.all(400),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (d) => _onBackgroundTap(d.localPosition),
+            child: SizedBox.fromSize(
+              size: sceneSize,
+              child: ListenableBuilder(
+                listenable: lab,
+                builder: (context, _) => Stack(
+                  children: [
+                    Positioned.fill(
+                      child: CustomPaint(painter: CablePainter(lab)),
                     ),
-                  ),
-                  Positioned.fill(
-                    child: CustomPaint(painter: CablePainter(lab)),
-                  ),
-                  for (final node in lab.nodes)
-                    Positioned(
-                      left: node.position.dx - 48,
-                      top: node.position.dy - 28,
-                      width: 96,
-                      child: _DeviceWidget(
-                        node: node,
-                        lab: lab,
-                        onTap: () => _onDeviceTap(context, node),
-                        onOpen: () =>
-                            onOpenConsole(node, _toView(node.position)),
+                    for (final node in lab.nodes)
+                      Positioned(
+                        left: node.position.dx - 48,
+                        top: node.position.dy - 28,
+                        width: 96,
+                        child: _DeviceWidget(
+                          node: node,
+                          lab: lab,
+                          onTap: () => _onDeviceTap(context, node),
+                          onOpen: () =>
+                              onOpenConsole(node, _toView(node.position)),
+                        ),
+                      ),
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: CustomPaint(painter: OverlayPainter(lab)),
                       ),
                     ),
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: CustomPaint(painter: OverlayPainter(lab)),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
