@@ -106,9 +106,31 @@ class ConsoleWindow extends ChangeNotifier {
 /// Everything about the open lab: the simulated network, where devices sit,
 /// the current tool, open consoles and view options.
 class LabController extends ChangeNotifier {
-  LabController();
+  /// A new empty lab, or one opened from [lab].
+  LabController({Lab? lab, this.savedPath})
+    : network = lab?.network ?? Network(),
+      name = lab?.name ?? 'Untitled lab',
+      notes = lab?.notes ?? '' {
+    if (lab == null) return;
+    for (final entry in lab.devices) {
+      nodes.add(
+        NodeView(
+          entry.device,
+          DeviceKind.values.byName(entry.model.name),
+          Offset(entry.x, entry.y),
+        ),
+      );
+      final id = int.tryParse(entry.device.id.replaceFirst('d', ''));
+      if (id != null && id >= _nextId) _nextId = id + 1;
+    }
+  }
 
-  final network = Network();
+  final Network network;
+  String name;
+  String notes;
+
+  /// Where this lab was last saved or opened from, if it is a saved file.
+  String? savedPath;
   final nodes = <NodeView>[];
   final consoles = <ConsoleWindow>[];
 
@@ -139,6 +161,12 @@ class LabController extends ChangeNotifier {
   CanvasColors get colors => CanvasColors.of(canvasTheme);
 
   void _changed() => notifyListeners();
+
+  /// Shows [text] in the status bar.
+  void notify(String text) {
+    message = text;
+    _changed();
+  }
 
   void setTool(Tool value) {
     tool = value;
@@ -302,19 +330,26 @@ class LabController extends ChangeNotifier {
     return null;
   }
 
+  /// The lab as it stands, for saving.
+  Lab toLab() => Lab(
+    network: network,
+    devices: [
+      for (final node in nodes)
+        LabDevice(node.device, node.position.dx, node.position.dy),
+    ],
+    name: name,
+    notes: notes,
+  );
+
   NodeView addDevice(DeviceKind kind, Offset position) {
-    final count = (_counters[kind] ?? 0) + 1;
+    var count = _counters[kind] ?? 0;
+    String name;
+    do {
+      name = '${kind.namePrefix}${++count}';
+    } while (nodes.any((n) => n.name == name));
     _counters[kind] = count;
     final id = 'd${_nextId++}';
-    final name = '${kind.namePrefix}$count';
-    final Device device = switch (kind) {
-      DeviceKind.router => Router(id, hostname: name),
-      DeviceKind.l2switch => L2Switch(id, hostname: name),
-      DeviceKind.l3switch => MultilayerSwitch(id, hostname: name),
-      DeviceKind.pc => Pc(id, hostname: name),
-      DeviceKind.laptop => Pc(id, hostname: name, kind: HostKind.laptop),
-      DeviceKind.server => Pc(id, hostname: name, kind: HostKind.server),
-    };
+    final device = createDevice(DeviceModel.values.byName(kind.name), id, name);
     network.add(device);
     // Step right (then down) until the spot is clear of other devices.
     var spot = position;

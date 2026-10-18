@@ -201,7 +201,16 @@ class OverlayPainter extends CustomPainter {
         }
         if (lab.showPortLabels) {
           final p = Offset(-u.dy, u.dx);
-          _label(canvas, port.shortName, at + u * (20 * sign) + p * 10, colors);
+          // A cable leaving downwards passes the device's name: put the
+          // port label further out so the two do not overlap.
+          final leavingDown = u.dy * sign > 0.35;
+          final along = leavingDown ? 46.0 : 20.0;
+          _label(
+            canvas,
+            port.shortName,
+            at + u * (along * sign) + p * 10,
+            colors,
+          );
         }
       }
     }

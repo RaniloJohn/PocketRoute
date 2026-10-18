@@ -7,7 +7,9 @@ import '../lab/lab_controller.dart';
 import '../theme.dart';
 import 'canvas_view.dart';
 import 'console_window.dart';
+import '../lab/lab_store.dart';
 import 'device_glyph.dart';
+import 'file_actions.dart';
 import 'simulation_panel.dart';
 
 /// The tablet layout: menu bar, palette, canvas with consoles, status bar.
@@ -60,11 +62,22 @@ class _LabScreenState extends State<LabScreen>
     super.dispose();
   }
 
-  void _newLab() {
+  void _newLab() => _replaceLab(LabController());
+
+  /// Swaps in another lab, fits it to the screen, and shows its notes when
+  /// asked (starter labs).
+  void _replaceLab(LabController next, {bool showNotes = false}) {
     final old = lab;
-    setState(() => lab = LabController());
-    WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+    setState(() => lab = next);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      old.dispose();
+      _fit();
+      if (showNotes && next.notes.trim().isNotEmpty) _files.showNotes();
+    });
   }
+
+  FileActions get _files =>
+      FileActions(context: context, lab: lab, replace: _replaceLab);
 
   /// Centre of the visible canvas, in scene units.
   Offset get _viewCentre =>
@@ -95,7 +108,13 @@ class _LabScreenState extends State<LabScreen>
     );
     for (final node in lab.nodes) {
       bounds = bounds.expandToInclude(
-        Rect.fromCenter(center: node.position, width: 120, height: 110),
+        // The icon plus the name and address printed below it.
+        Rect.fromLTRB(
+          node.position.dx - 70,
+          node.position.dy - 50,
+          node.position.dx + 70,
+          node.position.dy + 80,
+        ),
       );
     }
     final scale = math
@@ -136,6 +155,7 @@ class _LabScreenState extends State<LabScreen>
                 _Header(
                   lab: lab,
                   compact: compact,
+                  files: _files,
                   onNew: _newLab,
                   onAdd: (kind) => lab.addDevice(kind, _viewCentre),
                   onZoom: _zoom,
@@ -335,10 +355,12 @@ class _Header extends StatelessWidget {
     required this.onZoom,
     required this.onFit,
     required this.compact,
+    required this.files,
   });
 
   final LabController lab;
   final bool compact;
+  final FileActions files;
   final VoidCallback onNew;
   final void Function(DeviceKind kind) onAdd;
   final void Function(double factor) onZoom;
@@ -349,6 +371,7 @@ class _Header extends StatelessWidget {
     final menus = _menus(
       context,
       lab,
+      files: files,
       onNew: onNew,
       onAdd: onAdd,
       onZoom: onZoom,
@@ -463,6 +486,7 @@ String _runMode(LabController lab) => lab.simulation
 List<Widget> _menus(
   BuildContext context,
   LabController lab, {
+  required FileActions files,
   required VoidCallback onNew,
   required void Function(DeviceKind kind) onAdd,
   required void Function(double factor) onZoom,
@@ -494,8 +518,33 @@ List<Widget> _menus(
   return [
     menu('File', [
       item('New lab', onNew),
-      item('Open…  (next update)', null),
-      item('Save  (next update)', null),
+      SubmenuButton(
+        menuChildren: [
+          for (final starter in starterLabs)
+            MenuItemButton(
+              onPressed: () => files.openStarter(starter),
+              child: Text.rich(
+                TextSpan(
+                  text: starter.title,
+                  children: [
+                    TextSpan(
+                      text: '   ${starter.summary}',
+                      style: const TextStyle(color: Tokens.muted),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+        child: const Text('Starter labs'),
+      ),
+      item('Open…', files.open),
+      const Divider(height: 8),
+      item('Save', files.save),
+      item('Save as…', () => files.save(askName: true)),
+      item('Share…', files.share),
+      const Divider(height: 8),
+      item('Lab notes', files.showNotes),
     ]),
     menu('Edit', [
       item(

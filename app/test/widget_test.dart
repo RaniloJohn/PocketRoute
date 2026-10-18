@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketroute/main.dart';
 import 'package:pocketroute/src/lab/lab_controller.dart';
+import 'package:pocketroute/src/lab/lab_store.dart';
 import 'package:pocketroute/src/ui/lab_screen.dart';
 import 'package:pocketroute_core/pocketroute_core.dart';
 
@@ -52,6 +53,46 @@ void main() {
     expect(find.text('CLI'), findsOneWidget);
     expect(find.byTooltip('Dock below the canvas'), findsNothing);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('every starter lab opens in the lab controller', (tester) async {
+    final store = LabStore();
+    for (final starter in starterLabs) {
+      final lab = LabController(lab: await store.loadStarter(starter));
+      expect(lab.nodes, isNotEmpty, reason: starter.title);
+      expect(lab.name, isNot('Untitled lab'), reason: starter.title);
+      expect(lab.notes, isNotEmpty, reason: starter.title);
+    }
+    final campus = LabController(lab: await store.loadStarter(starterLabs[2]));
+    expect(campus.nodes.map((n) => n.kind), contains(DeviceKind.l3switch));
+    // New devices get fresh ids and names next to loaded ones.
+    final added = campus.addDevice(DeviceKind.pc, Offset.zero);
+    expect(added.device.id, 'd9');
+    expect(added.name, 'PC4');
+  });
+
+  test('a lab saved from the controller reopens with positions', () {
+    final lab = LabController();
+    final sw = lab.addDevice(DeviceKind.l2switch, const Offset(300, 100));
+    lab.addDevice(DeviceKind.server, const Offset(500, 300));
+    lab
+      ..setTool(Tool.cable)
+      ..pickCablePort(lab.firstUsablePort(lab.nodes.last)!)
+      ..pickCablePort(lab.firstUsablePort(sw)!)
+      ..name = 'Mine';
+    final bytes = LabFile.write(lab.toLab());
+    final reopened = LabController(lab: LabFile.read(bytes));
+    expect(reopened.name, 'Mine');
+    expect(reopened.nodes.map((n) => (n.name, n.kind, n.position)), [
+      ('SW1', DeviceKind.l2switch, const Offset(300, 100)),
+      ('SRV1', DeviceKind.server, const Offset(500, 300)),
+    ]);
+    expect(reopened.network.links, hasLength(1));
+  });
+
+  test('saved file names are made safe', () {
+    expect(LabStore.safeFileName('My lab: VLANs/2'), 'My lab VLANs2');
+    expect(LabStore.safeFileName('   '), 'Untitled lab');
   });
 
   test('lab controller cables two devices and opens consoles', () {

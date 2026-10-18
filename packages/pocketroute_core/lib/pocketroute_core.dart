@@ -13,6 +13,7 @@ export 'src/devices/l2_switch.dart';
 export 'src/devices/multilayer_switch.dart';
 export 'src/devices/pc.dart';
 export 'src/devices/router.dart';
+export 'src/lab/lab_file.dart';
 export 'src/net/frames.dart';
 export 'src/net/ipv4.dart';
 export 'src/net/mac_address.dart';

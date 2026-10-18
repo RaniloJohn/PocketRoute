@@ -117,6 +117,13 @@ ThemeData buildTheme() {
       labelLarge: TextStyle(fontSize: 13),
     ).apply(fontFamily: base.fontFamily, bodyColor: Tokens.ink),
     dividerColor: Tokens.border,
+    dialogTheme: const DialogThemeData(
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(Tokens.radius)),
+      ),
+    ),
     menuTheme: const MenuThemeData(
       style: MenuStyle(
         backgroundColor: WidgetStatePropertyAll(Colors.white),

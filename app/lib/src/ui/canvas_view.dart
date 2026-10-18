@@ -115,8 +115,7 @@ class CanvasView extends StatelessWidget {
         if (lab.cable == CableChoice.auto) {
           final port = lab.firstUsablePort(node);
           if (port == null) {
-            lab.message = '${node.name} has no free port for this cable';
-            lab.select(lab.selected);
+            lab.notify('${node.name} has no free port for this cable');
           } else {
             lab.pickCablePort(port);
           }
