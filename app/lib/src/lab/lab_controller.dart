@@ -23,9 +23,6 @@ enum DeviceKind {
   final String asset;
 
   bool get isHost => this == pc || this == laptop || this == server;
-
-  /// Layer 3 switching arrives with the next engine milestone.
-  bool get available => this != l3switch;
 }
 
 /// Cable choices in the palette. [auto] lets the engine pick.
@@ -170,8 +167,8 @@ class LabController extends ChangeNotifier {
     final name = '${kind.namePrefix}$count';
     final Device device = switch (kind) {
       DeviceKind.router => Router(id, hostname: name),
-      DeviceKind.l2switch ||
-      DeviceKind.l3switch => L2Switch(id, hostname: name),
+      DeviceKind.l2switch => L2Switch(id, hostname: name),
+      DeviceKind.l3switch => MultilayerSwitch(id, hostname: name),
       DeviceKind.pc => Pc(id, hostname: name),
       DeviceKind.laptop => Pc(id, hostname: name, kind: HostKind.laptop),
       DeviceKind.server => Pc(id, hostname: name, kind: HostKind.server),

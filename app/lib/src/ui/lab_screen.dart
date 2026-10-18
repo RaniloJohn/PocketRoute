@@ -377,12 +377,7 @@ class _Header extends StatelessWidget {
               ]),
               menu('Devices', [
                 for (final kind in DeviceKind.values)
-                  item(
-                    kind.available
-                        ? 'Add ${kind.label}'
-                        : '${kind.label}  (next update)',
-                    kind.available ? () => onAdd(kind) : null,
-                  ),
+                  item('Add ${kind.label}', () => onAdd(kind)),
               ]),
               menu('Simulation', [
                 RadioMenuButton<bool>(
@@ -504,33 +499,24 @@ class _PaletteState extends State<_Palette> {
       ),
     );
     Widget device(DeviceKind kind) {
-      final row = Opacity(
-        opacity: kind.available ? 1 : 0.45,
-        child: Container(
-          height: 36,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              DeviceGlyph(
-                kind: kind,
-                color: const Color(0xFF1A7CF0),
-                fill: Tokens.chrome,
-                size: 26,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(kind.label, style: const TextStyle(fontSize: 12.5)),
-              ),
-              if (!kind.available)
-                const Text(
-                  'next',
-                  style: TextStyle(fontSize: 11, color: Tokens.faint),
-                ),
-            ],
-          ),
+      final row = Container(
+        height: 36,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            DeviceGlyph(
+              kind: kind,
+              color: const Color(0xFF1A7CF0),
+              fill: Tokens.chrome,
+              size: 26,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(kind.label, style: const TextStyle(fontSize: 12.5)),
+            ),
+          ],
         ),
       );
-      if (!kind.available) return row;
       return Draggable<DeviceKind>(
         data: kind,
         dragAnchorStrategy: pointerDragAnchorStrategy,

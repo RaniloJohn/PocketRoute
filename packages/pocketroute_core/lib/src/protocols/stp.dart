@@ -45,6 +45,7 @@ class SpanningTree {
     required this._scheduler,
     required this._sendBpdu,
     required this._flushAddresses,
+    this._participates,
   });
 
   // Shortened timers, in ticks (ms). Standard values are 2 s, 20 s and 15 s.
@@ -61,6 +62,11 @@ class SpanningTree {
   final Scheduler Function() _scheduler;
   final void Function(Port port, Bpdu bpdu) _sendBpdu;
   final void Function() _flushAddresses;
+
+  /// Ports that take part in spanning tree; routed ports do not.
+  final bool Function(Port port)? _participates;
+
+  bool _active(Port port) => port.isUp && (_participates?.call(port) ?? true);
 
   final _info = <Port, _PortInfo>{};
   final portfast = <Port>{};
@@ -153,7 +159,7 @@ class SpanningTree {
 
   void _sendHellos() {
     for (final port in ports) {
-      if (port.isUp && role(port) == StpRole.designated) {
+      if (_active(port) && role(port) == StpRole.designated) {
         _sendBpdu(port, _bpduFor(port));
       }
     }
@@ -173,7 +179,7 @@ class SpanningTree {
     Port? bestPort;
     for (final port in ports) {
       final heard = _info[port]?.heard;
-      if (heard == null || !port.isUp) continue;
+      if (heard == null || !_active(port)) continue;
       final _Vector offer = (
         heard.rootId,
         heard.rootCost + costFor(port),
@@ -203,7 +209,7 @@ class SpanningTree {
     var newlyDesignated = false;
     for (final port in ports) {
       final StpRole role;
-      if (!port.isUp) {
+      if (!_active(port)) {
         role = StpRole.disabled;
       } else if (identical(port, bestPort)) {
         role = StpRole.root;

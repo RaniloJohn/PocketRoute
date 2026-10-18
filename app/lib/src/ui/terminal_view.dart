@@ -4,6 +4,9 @@ import 'package:flutter/services.dart';
 import '../lab/terminal.dart';
 import '../theme.dart';
 
+/// Room for an 80-column line of [_mono] plus padding.
+const _lineWidth = 640.0;
+
 const _mono = TextStyle(
   fontFamily: Tokens.mono,
   fontSize: 12.5,
@@ -159,22 +162,42 @@ class _TerminalViewState extends State<TerminalView> {
                   return Column(
                     children: [
                       Expanded(
-                        // Reversed, so the newest line stays pinned to the
-                        // bottom whatever the height does.
-                        child: ListView.builder(
-                          controller: _scroll,
-                          reverse: true,
-                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
-                          itemCount: lines.length + (busy ? 1 : 0),
-                          itemBuilder: (context, i) {
-                            final index = lines.length - 1 - i + (busy ? 1 : 0);
-                            return Text(
-                              index < lines.length
-                                  ? lines[index]
-                                  : _buffer.partial,
-                              style: _mono,
-                            );
-                          },
+                        // Device output is laid out for 80 columns: lines
+                        // never wrap, and narrow windows scroll sideways.
+                        child: LayoutBuilder(
+                          builder: (context, constraints) =>
+                              SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: SizedBox(
+                                  width: constraints.maxWidth < _lineWidth
+                                      ? _lineWidth
+                                      : constraints.maxWidth,
+                                  // Reversed, so the newest line stays pinned
+                                  // to the bottom whatever the height does.
+                                  child: ListView.builder(
+                                    controller: _scroll,
+                                    reverse: true,
+                                    padding: const EdgeInsets.fromLTRB(
+                                      12,
+                                      0,
+                                      12,
+                                      4,
+                                    ),
+                                    itemCount: lines.length + (busy ? 1 : 0),
+                                    itemBuilder: (context, i) {
+                                      final index =
+                                          lines.length - 1 - i + (busy ? 1 : 0);
+                                      return Text(
+                                        index < lines.length
+                                            ? lines[index]
+                                            : _buffer.partial,
+                                        style: _mono,
+                                        softWrap: false,
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
                         ),
                       ),
                       Offstage(

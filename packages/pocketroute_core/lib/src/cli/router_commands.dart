@@ -1,5 +1,6 @@
 import '../devices/router.dart';
 import '../net/ipv4.dart';
+import '../protocols/routing.dart';
 import '../sim/network.dart';
 import 'command.dart';
 import 'common_commands.dart';
@@ -100,13 +101,6 @@ CommandSet routerCommands(Router router) {
     ),
   ];
 
-  CmdNode routeTarget(ArgToken token, String help) => CmdNode.arg(
-    token,
-    help,
-    run: (ctx) => _addRoute(ctx, router),
-    negate: (ctx) => _removeRoute(ctx, router),
-  );
-
   return buildCommandSet(
     router,
     interfaceNode: CmdNode.keyword(
@@ -144,7 +138,7 @@ CommandSet routerCommands(Router router) {
           CmdNode.keyword(
             'route',
             'Routing table',
-            run: (ctx) => ctx.write(showIpRoute(router)),
+            run: (ctx) => ctx.write(showIpRoute(router.routing)),
           ),
         ],
       ),
@@ -154,35 +148,7 @@ CommandSet routerCommands(Router router) {
         CmdNode.keyword(
           'ip',
           'IP settings',
-          children: [
-            CmdNode.keyword(
-              'route',
-              'Add a static route',
-              children: [
-                CmdNode.arg(
-                  const Ipv4Arg('network'),
-                  'Destination network',
-                  children: [
-                    CmdNode.arg(
-                      const Ipv4Arg('mask'),
-                      'Destination mask',
-                      negate: (ctx) => _removeRoute(ctx, router),
-                      children: [
-                        routeTarget(
-                          const Ipv4Arg('nextHop'),
-                          'Next-hop router address',
-                        ),
-                        routeTarget(
-                          const InterfaceArg('exit', _interfaceTypes),
-                          '',
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ],
+          children: [ipRouteNode(router.routing, _interfaceTypes)],
         ),
       ],
       CliMode.interfaceConfig: interfaceModeNodes,
@@ -319,9 +285,21 @@ void _setAddress(CommandContext ctx, Router router) {
     );
     return;
   }
-  if (!checkInterfaceAddress(ctx, address, mask)) return;
-  for (final other in router.interfaces) {
-    final otherAddress = other.address, otherMask = other.mask;
+  setInterfaceAddress(ctx, router.routing, iface, address, mask);
+}
+
+/// Checks [address]/[mask] (valid, no overlap with another interface of
+/// [engine]) and applies it to [iface]. Returns false, with a message, if not.
+bool setInterfaceAddress(
+  CommandContext ctx,
+  RoutingEngine engine,
+  L3Interface iface,
+  Ipv4Address address,
+  Ipv4Address mask,
+) {
+  if (!checkInterfaceAddress(ctx, address, mask)) return false;
+  for (final other in engine.interfaces) {
+    final otherAddress = other.stack.address, otherMask = other.stack.mask;
     if (identical(other, iface) || otherAddress == null || otherMask == null) {
       continue;
     }
@@ -331,13 +309,45 @@ void _setAddress(CommandContext ctx, Router router) {
         : otherMask;
     if (address.sameSubnet(otherAddress, shorter)) {
       ctx.writeln('% ${address.network(mask)} overlaps with ${other.name}');
-      return;
+      return false;
     }
   }
   iface.stack.configure(address, mask);
+  return true;
 }
 
-/// The validated destination of an ip route command, or null.
+/// `ip route NETWORK MASK (NEXT-HOP | INTERFACE)` and its `no` form.
+CmdNode ipRouteNode(RoutingEngine engine, Map<String, String> interfaceTypes) {
+  CmdNode target(ArgToken token, String help) => CmdNode.arg(
+    token,
+    help,
+    run: (ctx) => _addRoute(ctx, engine),
+    negate: (ctx) => _removeRoute(ctx, engine),
+  );
+  return CmdNode.keyword(
+    'route',
+    'Add a static route',
+    children: [
+      CmdNode.arg(
+        const Ipv4Arg('network'),
+        'Destination network',
+        children: [
+          CmdNode.arg(
+            const Ipv4Arg('mask'),
+            'Destination mask',
+            negate: (ctx) => _removeRoute(ctx, engine),
+            children: [
+              target(const Ipv4Arg('nextHop'), 'Next-hop router address'),
+              target(InterfaceArg('exit', interfaceTypes), ''),
+            ],
+          ),
+        ],
+      ),
+    ],
+  );
+}
+
+/// The validated destination of an `ip route` command, or null.
 (Ipv4Address, Ipv4Address)? _destination(CommandContext ctx) {
   final network = ctx.arg<Ipv4Address>('network');
   final mask = ctx.arg<Ipv4Address>('mask');
@@ -367,28 +377,28 @@ StaticRoute? _routeFromArgs(CommandContext ctx) {
   );
 }
 
-void _addRoute(CommandContext ctx, Router router) {
+void _addRoute(CommandContext ctx, RoutingEngine engine) {
   final route = _routeFromArgs(ctx);
   if (route == null) return;
   final exit = route.exitInterface;
-  if (exit != null && router.interface(exit) == null) {
-    ctx.writeln('% $exit does not exist on this router');
+  if (exit != null && engine.interfaceNamed(exit) == null) {
+    ctx.writeln('% $exit does not exist on this device');
     return;
   }
   if (route.nextHop != null &&
-      router.interfaces.any((i) => i.address == route.nextHop)) {
-    ctx.writeln('% ${route.nextHop} is one of this router\'s own addresses');
+      engine.interfaces.any((i) => i.stack.address == route.nextHop)) {
+    ctx.writeln('% ${route.nextHop} is one of this device\'s own addresses');
     return;
   }
-  if (!router.staticRoutes.contains(route)) router.staticRoutes.add(route);
+  if (!engine.staticRoutes.contains(route)) engine.staticRoutes.add(route);
 }
 
-void _removeRoute(CommandContext ctx, Router router) {
+void _removeRoute(CommandContext ctx, RoutingEngine engine) {
   final destination = _destination(ctx);
   if (destination == null) return;
   final (network, mask) = destination;
   final specific = _routeFromArgs(ctx);
-  router.staticRoutes.removeWhere(
+  engine.staticRoutes.removeWhere(
     (r) =>
         r.network == network &&
         r.mask == mask &&
@@ -423,17 +433,21 @@ String renderRouterConfig(Router router) {
     if (!iface.adminUp) out.writeln(' shutdown');
     out.writeln('!');
   }
-  if (router.staticRoutes.isNotEmpty) {
-    for (final route in router.staticRoutes) {
-      out.writeln(
-        'ip route ${route.network} ${route.mask} '
-        '${route.exitInterface ?? route.nextHop}',
-      );
-    }
-    out.writeln('!');
-  }
+  renderStaticRoutes(out, router.routing);
   out.writeln('end');
   return out.toString();
+}
+
+/// The `ip route` lines of [engine], followed by `!`, if there are any.
+void renderStaticRoutes(StringBuffer out, RoutingEngine engine) {
+  if (engine.staticRoutes.isEmpty) return;
+  for (final route in engine.staticRoutes) {
+    out.writeln(
+      'ip route ${route.network} ${route.mask} '
+      '${route.exitInterface ?? route.nextHop}',
+    );
+  }
+  out.writeln('!');
 }
 
 String showRouterInterfaceBrief(Router router) {
@@ -465,8 +479,8 @@ int _classfulLength(Ipv4Address address) => switch (address.octets.first) {
   _ => 32,
 };
 
-String showIpRoute(Router router) {
-  final routes = router.routes
+String showIpRoute(RoutingEngine engine) {
+  final routes = engine.routes
     ..sort((a, b) {
       final byNetwork = a.network.compareTo(b.network);
       return byNetwork != 0

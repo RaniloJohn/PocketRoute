@@ -41,6 +41,19 @@ void main() {
     expect(window.terminal.backend.prompt, 'SW1#');
   });
 
+  test('the palette L3 switch is a working multilayer switch', () {
+    final lab = LabController();
+    final core = lab.addDevice(DeviceKind.l3switch, Offset.zero);
+    expect(core.device, isA<MultilayerSwitch>());
+    expect(core.name, 'MLS1');
+    final window = lab.openConsole(core, near: Offset.zero);
+    window.terminal
+      ..submit('enable')
+      ..submit('conf t')
+      ..submit('ip routing');
+    expect((core.device as MultilayerSwitch).ipRouting, isTrue);
+  });
+
   test('two PCs ping through a switch using their console terminals', () {
     final lab = LabController();
     final sw = lab.addDevice(DeviceKind.l2switch, const Offset(300, 100));

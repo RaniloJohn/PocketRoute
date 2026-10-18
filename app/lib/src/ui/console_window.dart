@@ -5,7 +5,8 @@ import '../lab/lab_controller.dart';
 import '../theme.dart';
 import 'terminal_view.dart';
 
-const consoleSize = Size(480, 420);
+/// Wide enough for 80-column device output at the terminal font size.
+const consoleSize = Size(660, 440);
 const dockedHeight = 300.0;
 
 /// A device's console: floats (drag by the title bar), docks under the

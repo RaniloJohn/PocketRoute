@@ -1,10 +1,14 @@
 import '../devices/l2_switch.dart';
+import '../devices/multilayer_switch.dart';
 import '../net/ipv4.dart';
+import '../protocols/echo.dart';
+import '../protocols/routing.dart';
 import '../protocols/stp.dart';
 import '../protocols/vlan.dart';
 import '../sim/network.dart';
 import 'command.dart';
 import 'common_commands.dart';
+import 'router_commands.dart';
 
 // Help strings here are PocketRoute's own wording. Only command names, mode
 // structure and output column layouts follow the public IOS-style convention.
@@ -20,8 +24,10 @@ final class PhysicalInterface extends SwitchInterface {
   final Port port;
 }
 
-final class ManagementInterface extends SwitchInterface {
-  const ManagementInterface();
+final class VlanInterface extends SwitchInterface {
+  const VlanInterface(this.vlan);
+
+  final int vlan;
 }
 
 const _interfaceTypes = {
@@ -29,6 +35,24 @@ const _interfaceTypes = {
   'GigabitEthernet': 'Gigabit Ethernet (1 Gb/s) port',
   'Vlan': 'Switch virtual interface for a VLAN',
 };
+
+const _multilayerTypes = {
+  'GigabitEthernet': 'Gigabit Ethernet (1 Gb/s) port',
+  'Vlan': 'Switch virtual interface for a VLAN',
+};
+
+Map<String, String> _typesFor(L2Switch sw) =>
+    sw is MultilayerSwitch ? _multilayerTypes : _interfaceTypes;
+
+/// Who answers `ping` from the switch: the routing engine on an L3 switch,
+/// the management interface on an L2 switch.
+EchoClient? _pinger(L2Switch sw) {
+  if (sw is MultilayerSwitch) {
+    final any = sw.interfaces.any((i) => i.stack.isConfigured);
+    return any ? sw.routing.echo : null;
+  }
+  return sw.svi.isConfigured ? sw.svi.echo : null;
+}
 
 /// Builds the command trees for [sw].
 CmdNode _vlanIdArg(
@@ -52,13 +76,14 @@ CommandSet switchCommands(L2Switch sw) {
       'Select an interface to configure',
       children: [
         CmdNode.arg(
-          const InterfaceArg('interface', _interfaceTypes),
+          InterfaceArg('interface', _typesFor(sw)),
           '',
           run: (ctx) => _selectInterface(ctx, sw),
+          negate: (ctx) => _deleteInterface(ctx, sw),
         ),
       ],
     ),
-    ping: (ctx) => iosPing(ctx, sw.svi.isConfigured ? sw.svi.echo : null),
+    ping: (ctx) => iosPing(ctx, _pinger(sw)),
     show: ({required privileged}) => [
       CmdNode.keyword(
         'interfaces',
@@ -86,6 +111,12 @@ CommandSet switchCommands(L2Switch sw) {
               ),
             ],
           ),
+          if (sw is MultilayerSwitch)
+            CmdNode.keyword(
+              'route',
+              'Routing table',
+              run: (ctx) => ctx.write(showIpRoute(sw.routing)),
+            ),
         ],
       ),
       CmdNode.keyword(
@@ -151,17 +182,27 @@ CommandSet switchCommands(L2Switch sw) {
             CmdNode.keyword(
               'default-gateway',
               'Router used to reach other subnets',
-              negate: (ctx) => sw.svi.gateway = null,
+              negate: (ctx) => _setGateway(sw, null),
               children: [
                 CmdNode.arg(
                   const Ipv4Arg('gateway'),
                   'Gateway address',
                   run: (ctx) =>
-                      sw.svi.gateway = ctx.arg<Ipv4Address>('gateway'),
-                  negate: (ctx) => sw.svi.gateway = null,
+                      _setGateway(sw, ctx.arg<Ipv4Address>('gateway')),
+                  negate: (ctx) => _setGateway(sw, null),
                 ),
               ],
             ),
+            if (sw is MultilayerSwitch) ...[
+              CmdNode.keyword(
+                'routing',
+                'Route between this switch'
+                    's IP interfaces',
+                run: (ctx) => sw.ipRouting = true,
+                negate: (ctx) => sw.ipRouting = false,
+              ),
+              ipRouteNode(sw.routing, _multilayerTypes),
+            ],
           ],
         ),
         CmdNode.keyword(
@@ -275,7 +316,7 @@ CommandSet switchCommands(L2Switch sw) {
             CmdNode.keyword(
               'portfast',
               'Forward at once when up; for ports to a single host',
-              run: (ctx) => _withPort(ctx, (port) {
+              run: (ctx) => _withPort(ctx, sw, (port) {
                 sw.stp.portfast.add(port);
                 ctx.warn(
                   '% Portfast is on for ${port.name}. Connect only one host '
@@ -284,13 +325,15 @@ CommandSet switchCommands(L2Switch sw) {
                 );
               }),
               negate: (ctx) =>
-                  _withPort(ctx, (port) => sw.stp.portfast.remove(port)),
+                  _withPort(ctx, sw, (port) => sw.stp.portfast.remove(port)),
             ),
           ],
         ),
         CmdNode.keyword(
           'switchport',
-          'Layer 2 port settings',
+          'Layer 2 port settings; alone, makes a routed port a switch port',
+          run: (ctx) => _setRouted(ctx, sw, routed: false),
+          negate: (ctx) => _setRouted(ctx, sw, routed: true),
           children: _switchportNodes(sw),
         ),
       ],
@@ -324,7 +367,7 @@ CommandSet switchCommands(L2Switch sw) {
 
 List<CmdNode> _switchportNodes(L2Switch sw) {
   void config(CommandContext ctx, void Function(SwitchportConfig c) change) =>
-      _withPort(ctx, (port) {
+      _withPort(ctx, sw, (port) {
         change(sw.switchport(port));
         sw.macTable.flushPort(port);
       });
@@ -460,13 +503,47 @@ List<CmdNode> _switchportNodes(L2Switch sw) {
   ];
 }
 
-/// Runs [action] on the selected physical port, or explains why not.
-void _withPort(CommandContext ctx, void Function(Port port) action) {
+/// Runs [action] on the selected switch port, or explains why not.
+void _withPort(
+  CommandContext ctx,
+  L2Switch sw,
+  void Function(Port port) action,
+) {
   switch (ctx.session.target) {
+    case PhysicalInterface(:final port) when sw.isRouted(port):
+      ctx.writeln(
+        '% ${port.name} is a routed port; enter "switchport" to make it a '
+        'switch port first',
+      );
     case PhysicalInterface(:final port):
       action(port);
     default:
       ctx.writeln('% Not available on a VLAN interface');
+  }
+}
+
+void _setRouted(CommandContext ctx, L2Switch sw, {required bool routed}) {
+  final target = ctx.session.target;
+  if (target is! PhysicalInterface) {
+    ctx.writeln('% Not available on a VLAN interface');
+    return;
+  }
+  if (sw is! MultilayerSwitch) {
+    if (routed) {
+      ctx.writeln(
+        '% Ports on a layer 2 switch cannot be routed; use an L3 switch',
+      );
+    }
+    return;
+  }
+  sw.setRouted(target.port, routed: routed);
+}
+
+void _setGateway(L2Switch sw, Ipv4Address? gateway) {
+  if (sw is MultilayerSwitch) {
+    sw.routing.defaultGateway = gateway;
+  } else {
+    sw.svi.gateway = gateway;
   }
 }
 
@@ -488,9 +565,14 @@ void _setPriority(CommandContext ctx, L2Switch sw) {
 
 void _selectInterface(CommandContext ctx, L2Switch sw) {
   final ref = ctx.arg<InterfaceRef>('interface');
+  final vlanNumber = int.tryParse(ref.number);
   final SwitchInterface? selected = switch (ref.type) {
-    'Vlan' when ref.number == '${L2Switch.managementVlan}' =>
-      const ManagementInterface(),
+    'Vlan'
+        when vlanNumber != null &&
+            vlanNumber >= minVlan &&
+            vlanNumber <= maxVlan &&
+            sw.supportsSvi(vlanNumber) =>
+      VlanInterface(vlanNumber),
     'Vlan' => null,
     _ => switch (sw.port(ref.name)) {
       final Port port => PhysicalInterface(port),
@@ -500,15 +582,32 @@ void _selectInterface(CommandContext ctx, L2Switch sw) {
   if (selected == null) {
     ctx.writeln(
       ref.type == 'Vlan'
-          ? '% Only interface Vlan${L2Switch.managementVlan} is available '
-                'in this version'
+          ? sw is MultilayerSwitch
+                ? '% VLAN interfaces are numbered 1 to $maxVlan'
+                : '% A layer 2 switch has only interface '
+                      'Vlan${L2Switch.managementVlan}; use an L3 switch for more'
           : '% ${ref.name} does not exist on this switch',
     );
     return;
   }
+  if (selected is VlanInterface) sw.sviFor(selected.vlan);
   ctx.session
     ..target = selected
     ..mode = CliMode.interfaceConfig;
+}
+
+void _deleteInterface(CommandContext ctx, L2Switch sw) {
+  final ref = ctx.arg<InterfaceRef>('interface');
+  final vlan = int.tryParse(ref.number);
+  if (ref.type != 'Vlan' || vlan == null) {
+    ctx.writeln('% Only VLAN interfaces can be removed');
+    return;
+  }
+  if (vlan == L2Switch.managementVlan) {
+    ctx.writeln('% Interface Vlan1 cannot be removed');
+    return;
+  }
+  sw.removeSvi(vlan);
 }
 
 void _setDescription(CommandContext ctx, L2Switch sw, String? text) {
@@ -519,8 +618,8 @@ void _setDescription(CommandContext ctx, L2Switch sw, String? text) {
   switch (ctx.session.target) {
     case PhysicalInterface(:final port):
       port.description = text;
-    case ManagementInterface():
-      sw.sviDescription = text;
+    case VlanInterface(:final vlan):
+      sw.sviFor(vlan).description = text;
   }
 }
 
@@ -528,27 +627,38 @@ void _setAdmin(CommandContext ctx, L2Switch sw, {required bool up}) {
   switch (ctx.session.target) {
     case PhysicalInterface(:final port):
       port.adminUp = up;
-    case ManagementInterface():
-      sw.sviAdminUp = up;
+    case VlanInterface(:final vlan):
+      sw.sviFor(vlan).adminUp = up;
   }
 }
 
 void _setAddress(CommandContext ctx, L2Switch sw, {required bool clear}) {
-  if (ctx.session.target is! ManagementInterface) {
+  final L3Interface? iface = switch (ctx.session.target) {
+    VlanInterface(:final vlan) => sw.sviFor(vlan),
+    PhysicalInterface(:final port) when sw is MultilayerSwitch => sw.routedPort(
+      port,
+    ),
+    _ => null,
+  };
+  if (iface == null) {
     ctx.writeln(
-      '% Switch ports are layer 2; set the address on interface '
-      'Vlan${L2Switch.managementVlan}',
+      sw is MultilayerSwitch
+          ? '% This is a switch port; enter "no switchport" to route on it'
+          : '% Switch ports are layer 2; set the address on interface '
+                'Vlan${L2Switch.managementVlan}',
     );
     return;
   }
   if (clear) {
-    sw.svi.configure(null, null);
+    iface.stack.configure(null, null);
     return;
   }
   final address = ctx.arg<Ipv4Address>('address');
   final mask = ctx.arg<Ipv4Address>('mask');
-  if (checkInterfaceAddress(ctx, address, mask)) {
-    sw.svi.configure(address, mask);
+  if (sw is MultilayerSwitch) {
+    setInterfaceAddress(ctx, sw.routing, iface, address, mask);
+  } else if (checkInterfaceAddress(ctx, address, mask)) {
+    iface.stack.configure(address, mask);
   }
 }
 
@@ -559,6 +669,11 @@ String renderSwitchConfig(L2Switch sw) {
     ..writeln('!')
     ..writeln('hostname ${sw.hostname}')
     ..writeln('!');
+  if (sw is MultilayerSwitch && sw.ipRouting) {
+    out
+      ..writeln('ip routing')
+      ..writeln('!');
+  }
   if (sw.stp.priority != SpanningTree.defaultPriority) {
     out
       ..writeln('spanning-tree vlan 1 priority ${sw.stp.priority}')
@@ -576,6 +691,13 @@ String renderSwitchConfig(L2Switch sw) {
     if (port.description != null) {
       out.writeln(' description ${port.description}');
     }
+    if (sw is MultilayerSwitch && sw.routedPort(port) != null) {
+      out.writeln(' no switchport');
+      _renderAddress(out, sw.routedPort(port)!);
+      if (!port.adminUp) out.writeln(' shutdown');
+      out.writeln('!');
+      continue;
+    }
     if (config.accessVlan != 1) {
       out.writeln(' switchport access vlan ${config.accessVlan}');
     }
@@ -590,55 +712,57 @@ String renderSwitchConfig(L2Switch sw) {
     if (sw.stp.portfast.contains(port)) out.writeln(' spanning-tree portfast');
     out.writeln('!');
   }
-  out.writeln('interface Vlan${L2Switch.managementVlan}');
-  if (sw.sviDescription != null) {
-    out.writeln(' description ${sw.sviDescription}');
+  for (final svi in sw.svis.values) {
+    out.writeln('interface ${svi.name}');
+    if (svi.description != null) out.writeln(' description ${svi.description}');
+    _renderAddress(out, svi);
+    // SVIs start shut down, so the enabled state must be written out.
+    out
+      ..writeln(svi.adminUp ? ' no shutdown' : ' shutdown')
+      ..writeln('!');
   }
-  final address = sw.svi.address, mask = sw.svi.mask;
-  out.writeln(
-    address == null || mask == null
-        ? ' no ip address'
-        : ' ip address $address $mask',
-  );
-  // Vlan1 defaults to shut down, so the enabled state must be written out.
-  out
-    ..writeln(sw.sviAdminUp ? ' no shutdown' : ' shutdown')
-    ..writeln('!');
-  final gateway = sw.svi.gateway;
+  final gateway = sw is MultilayerSwitch
+      ? sw.routing.defaultGateway
+      : sw.svi.gateway;
   if (gateway != null) {
     out
       ..writeln('ip default-gateway $gateway')
       ..writeln('!');
   }
+  if (sw is MultilayerSwitch) renderStaticRoutes(out, sw.routing);
   out.writeln('end');
   return out.toString();
 }
 
+void _renderAddress(StringBuffer out, L3Interface iface) {
+  final address = iface.stack.address, mask = iface.stack.mask;
+  out.writeln(
+    address == null || mask == null
+        ? ' no ip address'
+        : ' ip address $address $mask',
+  );
+}
+
 String showIpInterfaceBrief(L2Switch sw) {
   final out = StringBuffer()..writeln(briefHeader());
+  void row(String name, Ipv4Address? address, bool adminUp, bool up) =>
+      out.writeln(
+        briefRow(
+          name,
+          address?.toString() ?? 'unassigned',
+          'YES',
+          address == null ? 'unset' : 'manual',
+          interfaceStatus(adminUp: adminUp, up: up),
+          up ? 'up' : 'down',
+        ),
+      );
   for (final port in sw.ports) {
-    out.writeln(
-      briefRow(
-        port.name,
-        'unassigned',
-        'YES',
-        'unset',
-        interfaceStatus(adminUp: port.adminUp, up: port.isUp),
-        port.isUp ? 'up' : 'down',
-      ),
-    );
+    final routed = sw is MultilayerSwitch ? sw.routedPort(port) : null;
+    row(port.name, routed?.stack.address, port.adminUp, port.isUp);
   }
-  final address = sw.svi.address;
-  out.writeln(
-    briefRow(
-      'Vlan${L2Switch.managementVlan}',
-      address?.toString() ?? 'unassigned',
-      'YES',
-      address == null ? 'unset' : 'manual',
-      interfaceStatus(adminUp: sw.sviAdminUp, up: sw.sviIsUp),
-      sw.sviIsUp ? 'up' : 'down',
-    ),
-  );
+  for (final svi in sw.svis.values) {
+    row(svi.name, svi.stack.address, svi.adminUp, svi.isUp);
+  }
   return out.toString();
 }
 

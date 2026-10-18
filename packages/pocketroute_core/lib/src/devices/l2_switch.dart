@@ -7,6 +7,7 @@ import '../net/frames.dart';
 import '../net/mac_address.dart';
 import '../protocols/ip_stack.dart';
 import '../protocols/mac_table.dart';
+import '../protocols/routing.dart';
 import '../protocols/stp.dart';
 import '../protocols/vlan.dart';
 import '../sim/network.dart';
@@ -27,6 +28,49 @@ class SwitchportConfig {
   /// Whether this port belongs to [vlan] in its current mode.
   bool carries(int vlan) =>
       isTrunk ? allowed.contains(vlan) : accessVlan == vlan;
+}
+
+/// A switch virtual interface (`interface vlan N`): the switch's own IP
+/// presence in one VLAN.
+class SwitchVirtualInterface implements L3Interface {
+  SwitchVirtualInterface._(this.sw, this.vlan);
+
+  final L2Switch sw;
+  final int vlan;
+
+  /// SVIs start shut down, as on real switches.
+  bool adminUp = false;
+  String? description;
+
+  @override
+  late final IpStack stack = IpStack(
+    scheduler: () => sw.scheduler,
+    mac: sw.baseMac,
+    transmit: (frame) => sw._sendFromSvi(vlan, frame),
+    isUp: () => isUp,
+    defaultTtl: 255,
+    arpTimeout: 4 * 60 * 60 * 1000,
+    onPacket: sw.packetHandlerFor(this),
+  );
+
+  @override
+  String get name => 'Vlan$vlan';
+
+  @override
+  String get shortName => 'Vl$vlan';
+
+  /// Up when enabled, the VLAN exists, and a forwarding port carries it.
+  @override
+  bool get isUp =>
+      adminUp &&
+      sw.vlans.containsKey(vlan) &&
+      sw.ports.any(
+        (p) =>
+            p.isUp &&
+            !sw.isRouted(p) &&
+            sw.switchport(p).carries(vlan) &&
+            sw.stp.forwards(p),
+      );
 }
 
 /// A layer 2 switch: Fast Ethernet access ports, Gigabit uplinks, VLANs with
@@ -51,7 +95,11 @@ class L2Switch extends Device implements ConfigurableDevice {
   String? startupConfig;
 
   @override
-  late final List<Port> ports = [
+  late final List<Port> ports = buildPorts();
+
+  /// The switch's ports, numbered from 1. Overridden by switch models with a
+  /// different layout.
+  List<Port> buildPorts() => [
     for (var i = 1; i <= fastEthernetPorts; i++)
       Port(this, 'FastEthernet0/$i', 'Fa0/$i', i),
     for (var i = 1; i <= gigabitPorts; i++)
@@ -66,6 +114,9 @@ class L2Switch extends Device implements ConfigurableDevice {
   @override
   bool get isSwitchLike => true;
 
+  /// The switch's own MAC, shared by its SVIs and its bridge ID.
+  late final MacAddress baseMac = MacAddress.derived(id, 0);
+
   /// VLAN database: ID -> name. VLAN 1 always exists.
   final vlans = SplayTreeMap<int, String>.of({1: 'default'});
 
@@ -77,25 +128,55 @@ class L2Switch extends Device implements ConfigurableDevice {
 
   late final SpanningTree stp = SpanningTree(
     ports: ports,
-    bridgeMac: MacAddress.derived(id, 0),
+    bridgeMac: baseMac,
     scheduler: () => scheduler,
     sendBpdu: (port, bpdu) =>
         port.send(Frame(src: port.mac, dst: Bpdu.groupAddress, payload: bpdu)),
     flushAddresses: () => macTable.clear(),
+    participates: (port) => !isRouted(port),
   );
 
-  /// Interface Vlan1 starts shut down, as on real switches.
-  bool sviAdminUp = false;
-  String? sviDescription;
+  /// SVIs by VLAN. Interface Vlan1 always exists.
+  late final SplayTreeMap<int, SwitchVirtualInterface> svis = SplayTreeMap.of({
+    1: SwitchVirtualInterface._(this, managementVlan),
+  });
 
-  late final IpStack svi = IpStack(
-    scheduler: () => scheduler,
-    mac: MacAddress.derived(id, 0),
-    transmit: _sendFromSvi,
-    isUp: () => sviIsUp,
-    defaultTtl: 255,
-    arpTimeout: 4 * 60 * 60 * 1000,
-  );
+  /// Whether this switch can have an SVI for [vlan]. A layer 2 switch has
+  /// only the management interface.
+  bool supportsSvi(int vlan) => vlan == managementVlan;
+
+  SwitchVirtualInterface sviFor(int vlan) =>
+      svis.putIfAbsent(vlan, () => SwitchVirtualInterface._(this, vlan));
+
+  void removeSvi(int vlan) {
+    if (vlan == managementVlan) return;
+    svis.remove(vlan)?.stack.configure(null, null);
+  }
+
+  /// What handles IP packets arriving on [iface]; null means behave as a
+  /// plain host (default gateway, answer pings).
+  void Function(Ipv4Packet packet)? packetHandlerFor(L3Interface iface) => null;
+
+  /// Whether [port] is a routed (layer 3) port. Never on a layer 2 switch.
+  bool isRouted(Port port) => false;
+
+  /// Handles a frame on a routed port.
+  void receiveRouted(Port port, Frame frame) {}
+
+  // The management interface, as most of the CLI sees it.
+  SwitchVirtualInterface get managementSvi => svis[managementVlan]!;
+
+  IpStack get svi => managementSvi.stack;
+
+  bool get sviAdminUp => managementSvi.adminUp;
+
+  set sviAdminUp(bool value) => managementSvi.adminUp = value;
+
+  String? get sviDescription => managementSvi.description;
+
+  set sviDescription(String? value) => managementSvi.description = value;
+
+  bool get sviIsUp => managementSvi.isUp;
 
   SwitchportConfig switchport(Port port) => _switchport[port]!;
 
@@ -113,14 +194,6 @@ class L2Switch extends Device implements ConfigurableDevice {
     macTable.clear();
   }
 
-  /// Vlan1 is up when enabled and a forwarding port carries VLAN 1.
-  bool get sviIsUp =>
-      sviAdminUp &&
-      ports.any(
-        (p) =>
-            p.isUp && switchport(p).carries(managementVlan) && stp.forwards(p),
-      );
-
   @override
   String renderConfig() => renderSwitchConfig(this);
 
@@ -135,6 +208,10 @@ class L2Switch extends Device implements ConfigurableDevice {
 
   @override
   void receive(Port port, Frame frame) {
+    if (isRouted(port)) {
+      receiveRouted(port, frame);
+      return;
+    }
     if (frame.payload case final Bpdu bpdu) {
       stp.receive(port, bpdu);
       return;
@@ -145,13 +222,14 @@ class L2Switch extends Device implements ConfigurableDevice {
     if (!stp.forwards(port)) return;
 
     final untagged = frame.withVlan(null);
-    final forSvi = vlan == managementVlan && sviIsUp;
-    if (frame.dst == svi.mac) {
-      if (forSvi) svi.receive(untagged);
+    final svi = svis[vlan];
+    final forSvi = svi != null && svi.isUp;
+    if (frame.dst == baseMac) {
+      if (forSvi) svi.stack.receive(untagged);
       return;
     }
     if (frame.dst.isGroup) {
-      if (forSvi) svi.receive(untagged);
+      if (forSvi) svi.stack.receive(untagged);
       _flood(untagged, vlan, except: port);
       return;
     }
@@ -186,6 +264,7 @@ class L2Switch extends Device implements ConfigurableDevice {
 
   /// Sends an untagged [frame] in [vlan] out of [port], tagging it on trunks.
   void _egress(Port port, Frame frame, int vlan) {
+    if (isRouted(port)) return;
     final config = switchport(port);
     if (!config.carries(vlan) || !stp.forwards(port)) return;
     port.send(
@@ -201,14 +280,12 @@ class L2Switch extends Device implements ConfigurableDevice {
     }
   }
 
-  void _sendFromSvi(Frame frame) {
-    final out = frame.dst.isGroup
-        ? null
-        : macTable.lookup(frame.dst, managementVlan);
+  void _sendFromSvi(int vlan, Frame frame) {
+    final out = frame.dst.isGroup ? null : macTable.lookup(frame.dst, vlan);
     if (out == null) {
-      _flood(frame, managementVlan);
+      _flood(frame, vlan);
     } else {
-      _egress(out, frame, managementVlan);
+      _egress(out, frame, vlan);
     }
   }
 }

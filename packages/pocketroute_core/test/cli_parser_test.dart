@@ -130,7 +130,7 @@ void main() {
     t.runAll(['enable', 'conf t']);
     expect(t.run('hostname 1abc'), startsWith('% Hostnames start'));
     expect(t.run('interface fa0/30'), contains('does not exist'));
-    expect(t.run('interface vlan 10'), contains('Only interface Vlan1'));
+    expect(t.run('interface vlan 10'), contains('only interface Vlan1'));
     t.run('interface fa0/1');
     expect(t.run('ip address 10.0.0.1 255.0.0.0'), contains('layer 2'));
     t.run('interface vlan 1');

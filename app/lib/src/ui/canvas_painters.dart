@@ -225,7 +225,9 @@ class OverlayPainter extends CustomPainter {
     if (link.cable == CableType.console) return null;
     if (!port.isUp) return Tokens.linkDown;
     final device = port.device;
-    if (device is L2Switch && !device.stp.forwards(port)) {
+    if (device is L2Switch &&
+        !device.isRouted(port) &&
+        !device.stp.forwards(port)) {
       return Tokens.linkStarting;
     }
     return Tokens.linkUp;
