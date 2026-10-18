@@ -103,18 +103,24 @@ class _LabScreenState extends State<LabScreen>
 
   @override
   Widget build(BuildContext context) {
+    // Phones (short side under 600 dp) get the compact chrome; the app runs
+    // in landscape on every device.
+    final compact = MediaQuery.sizeOf(context).shortestSide < 600;
     return Scaffold(
       body: SafeArea(
         child: ListenableBuilder(
           listenable: lab,
           builder: (context, _) {
-            final docked = lab.consoles
-                .where((w) => w.mode == WindowMode.docked)
-                .firstOrNull;
+            final docked = compact
+                ? null
+                : lab.consoles
+                      .where((w) => w.mode == WindowMode.docked)
+                      .firstOrNull;
             return Column(
               children: [
                 _Header(
                   lab: lab,
+                  compact: compact,
                   onNew: _newLab,
                   onAdd: (kind) => lab.addDevice(kind, _viewCentre),
                   onZoom: _zoom,
@@ -124,14 +130,20 @@ class _LabScreenState extends State<LabScreen>
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _Palette(
-                        lab: lab,
-                        onAdd: (kind) => lab.addDevice(kind, _viewCentre),
-                      ),
+                      if (compact)
+                        _IconRail(
+                          lab: lab,
+                          onAdd: (kind) => lab.addDevice(kind, _viewCentre),
+                        )
+                      else
+                        _Palette(
+                          lab: lab,
+                          onAdd: (kind) => lab.addDevice(kind, _viewCentre),
+                        ),
                       Expanded(
                         child: Column(
                           children: [
-                            Expanded(child: _canvasArea()),
+                            Expanded(child: _canvasArea(compact: compact)),
                             if (docked != null)
                               SizedBox(
                                 height: dockedHeight,
@@ -162,13 +174,22 @@ class _LabScreenState extends State<LabScreen>
     );
   }
 
-  Widget _canvasArea() {
+  Widget _canvasArea({required bool compact}) {
     return LayoutBuilder(
       builder: (context, constraints) {
         _canvasSize = constraints.biggest;
-        final floating = lab.consoles.where(
-          (w) => w.mode == WindowMode.floating,
-        );
+        final floating = compact
+            ? const <ConsoleWindow>[]
+            : lab.consoles.where((w) => w.mode == WindowMode.floating);
+        // On a phone the front console slides in from the right instead.
+        final sheet = compact
+            ? lab.consoles
+                  .where((w) => w.mode != WindowMode.minimized)
+                  .lastOrNull
+            : null;
+        final sheetWidth = (_canvasSize.width * 0.62)
+            .clamp(360.0, math.max(360.0, _canvasSize.width - 72))
+            .toDouble();
         return ClipRect(
           child: Stack(
             children: [
@@ -179,6 +200,20 @@ class _LabScreenState extends State<LabScreen>
                   onOpenConsole: _openConsole,
                 ),
               ),
+              if (sheet != null)
+                Positioned(
+                  key: ObjectKey(sheet),
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  width: sheetWidth,
+                  child: ConsoleWindowView(
+                    lab: lab,
+                    window: sheet,
+                    area: _canvasSize,
+                    compact: true,
+                  ),
+                ),
               for (final window in floating)
                 ListenableBuilder(
                   key: ObjectKey(window),
@@ -216,12 +251,16 @@ class _ChromeButton extends StatelessWidget {
     required this.onTap,
     this.selected = false,
     this.first = false,
+    this.compact = false,
   });
 
   final String label;
   final VoidCallback onTap;
   final bool selected;
   final bool first;
+
+  /// Phone sizing: still a 36 px touch target, tighter padding.
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -230,8 +269,8 @@ class _ChromeButton extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
-          height: 30,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
+          height: compact ? 32 : 30,
+          padding: EdgeInsets.symmetric(horizontal: compact ? 10 : 12),
           alignment: Alignment.center,
           decoration: BoxDecoration(
             border: first
@@ -275,9 +314,11 @@ class _Header extends StatelessWidget {
     required this.onAdd,
     required this.onZoom,
     required this.onFit,
+    required this.compact,
   });
 
   final LabController lab;
+  final bool compact;
   final VoidCallback onNew;
   final void Function(DeviceKind kind) onAdd;
   final void Function(double factor) onZoom;
@@ -285,121 +326,63 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const menuText = TextStyle(fontSize: 13, color: Tokens.text);
-    final topStyle = ButtonStyle(
-      textStyle: const WidgetStatePropertyAll(menuText),
-      foregroundColor: const WidgetStatePropertyAll(Tokens.text),
-      padding: const WidgetStatePropertyAll(
-        EdgeInsets.symmetric(horizontal: 10),
-      ),
-      minimumSize: const WidgetStatePropertyAll(Size(0, 44)),
-      shape: const WidgetStatePropertyAll(RoundedRectangleBorder()),
-      backgroundColor: WidgetStateProperty.resolveWith(
-        (s) =>
-            s.contains(WidgetState.focused) ||
-                s.contains(WidgetState.hovered) ||
-                s.contains(WidgetState.pressed)
-            ? Tokens.selected
-            : Colors.transparent,
-      ),
+    final menus = _menus(
+      context,
+      lab,
+      onNew: onNew,
+      onAdd: onAdd,
+      onZoom: onZoom,
+      onFit: onFit,
+      nested: compact,
     );
-    SubmenuButton menu(String label, List<Widget> items) =>
-        SubmenuButton(style: topStyle, menuChildren: items, child: Text(label));
-    MenuItemButton item(String label, VoidCallback? onTap) =>
-        MenuItemButton(onPressed: onTap, child: Text(label));
-
     return Container(
-      height: 44,
-      padding: const EdgeInsets.only(left: 14, right: 10),
+      height: compact ? 40 : 44,
+      padding: EdgeInsets.only(left: compact ? 4 : 14, right: 10),
       decoration: const BoxDecoration(
         color: Tokens.chrome,
         border: Border(bottom: BorderSide(color: Tokens.border)),
       ),
       child: Row(
         children: [
-          const Text(
-            'PocketRoute',
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-          ),
-          const SizedBox(width: 10),
-          MenuBar(
-            style: const MenuStyle(
-              backgroundColor: WidgetStatePropertyAll(Colors.transparent),
-              elevation: WidgetStatePropertyAll(0),
-              shadowColor: WidgetStatePropertyAll(Colors.transparent),
-              padding: WidgetStatePropertyAll(EdgeInsets.zero),
+          if (compact)
+            MenuAnchor(
+              menuChildren: menus,
+              builder: (context, controller, _) => TextButton.icon(
+                onPressed: () =>
+                    controller.isOpen ? controller.close() : controller.open(),
+                style: TextButton.styleFrom(
+                  foregroundColor: Tokens.text,
+                  minimumSize: const Size(0, 36),
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.all(
+                      Radius.circular(Tokens.radius),
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.menu, size: 18),
+                label: const Text(
+                  'PocketRoute',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            )
+          else ...[
+            const Text(
+              'PocketRoute',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
             ),
-            children: [
-              menu('File', [
-                item('New lab', onNew),
-                item('Open…  (next update)', null),
-                item('Save  (next update)', null),
-              ]),
-              menu('Edit', [
-                item(
-                  'Delete selected',
-                  lab.selected == null
-                      ? null
-                      : () => lab.removeDevice(lab.selected!),
-                ),
-              ]),
-              menu('View', [
-                for (final p in CanvasPattern.values)
-                  RadioMenuButton<CanvasPattern>(
-                    value: p,
-                    groupValue: lab.pattern,
-                    onChanged: (v) => lab.setView(pattern: v),
-                    child: Text('${_title(p.name)} pattern'),
-                  ),
-                const Divider(height: 8),
-                for (final t in CanvasTheme.values)
-                  RadioMenuButton<CanvasTheme>(
-                    value: t,
-                    groupValue: lab.canvasTheme,
-                    onChanged: (v) => lab.setView(theme: v),
-                    child: Text('${_title(t.name)} canvas'),
-                  ),
-                const Divider(height: 8),
-                CheckboxMenuButton(
-                  value: lab.showPortLabels,
-                  onChanged: (v) => lab.setView(portLabels: v),
-                  child: const Text('Port labels on cables'),
-                ),
-                CheckboxMenuButton(
-                  value: lab.snapToGrid,
-                  onChanged: (v) => lab.setView(snap: v),
-                  child: const Text('Snap to grid'),
-                ),
-                const Divider(height: 8),
-                item('Zoom in', () => onZoom(1.25)),
-                item('Zoom out', () => onZoom(0.8)),
-                item('Fit to screen', onFit),
-              ]),
-              menu('Devices', [
-                for (final kind in DeviceKind.values)
-                  item('Add ${kind.label}', () => onAdd(kind)),
-              ]),
-              menu('Simulation', [
-                RadioMenuButton<bool>(
-                  value: true,
-                  groupValue: lab.running,
-                  onChanged: (_) => lab.setRunning(true),
-                  child: const Text('Run in real time'),
-                ),
-                RadioMenuButton<bool>(
-                  value: false,
-                  groupValue: lab.running,
-                  onChanged: (_) => lab.setRunning(false),
-                  child: const Text('Pause'),
-                ),
-                item(
-                  'Step 100 ms',
-                  lab.running ? null : () => lab.advance(100),
-                ),
-              ]),
-              menu('Help', [item('About PocketRoute', () => _about(context))]),
-            ],
-          ),
+            const SizedBox(width: 10),
+            MenuBar(
+              style: const MenuStyle(
+                backgroundColor: WidgetStatePropertyAll(Colors.transparent),
+                elevation: WidgetStatePropertyAll(0),
+                shadowColor: WidgetStatePropertyAll(Colors.transparent),
+                padding: WidgetStatePropertyAll(EdgeInsets.zero),
+              ),
+              children: menus,
+            ),
+          ],
           // On narrow screens the tool groups scroll rather than overflow.
           Expanded(
             child: SingleChildScrollView(
@@ -412,6 +395,7 @@ class _Header extends StatelessWidget {
                       for (final (i, tool) in Tool.values.indexed)
                         _ChromeButton(
                           label: _title(tool.name),
+                          compact: compact,
                           first: i == 0,
                           selected: lab.tool == tool,
                           onTap: () => lab.setTool(tool),
@@ -424,11 +408,13 @@ class _Header extends StatelessWidget {
                       _ChromeButton(
                         label: 'Realtime',
                         first: true,
+                        compact: compact,
                         selected: lab.running,
                         onTap: () => lab.setRunning(true),
                       ),
                       _ChromeButton(
                         label: 'Paused',
+                        compact: compact,
                         selected: !lab.running,
                         onTap: () => lab.setRunning(false),
                       ),
@@ -442,30 +428,252 @@ class _Header extends StatelessWidget {
       ),
     );
   }
+}
 
-  static String _title(String s) => s[0].toUpperCase() + s.substring(1);
+String _title(String s) => s[0].toUpperCase() + s.substring(1);
 
-  void _about(BuildContext context) => showDialog<void>(
-    context: context,
-    builder: (context) => AlertDialog(
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.all(Radius.circular(Tokens.radius)),
-      ),
-      title: const Text('PocketRoute', style: TextStyle(fontSize: 16)),
-      content: const Text(
-        'An offline network lab for students.\n\n'
-        'PocketRoute is not affiliated with or endorsed by Cisco Systems, Inc.\n'
-        'IBM Plex fonts: SIL Open Font License 1.1.',
-        style: TextStyle(fontSize: 13),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Close'),
-        ),
-      ],
+/// The File, Edit, View, Devices, Simulation and Help menus. [nested] when
+/// they hang off a single menu button rather than a menu bar.
+List<Widget> _menus(
+  BuildContext context,
+  LabController lab, {
+  required VoidCallback onNew,
+  required void Function(DeviceKind kind) onAdd,
+  required void Function(double factor) onZoom,
+  required VoidCallback onFit,
+  required bool nested,
+}) {
+  final topStyle = ButtonStyle(
+    textStyle: const WidgetStatePropertyAll(
+      TextStyle(fontSize: 13, color: Tokens.text),
+    ),
+    foregroundColor: const WidgetStatePropertyAll(Tokens.text),
+    padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
+    minimumSize: WidgetStatePropertyAll(Size(nested ? 180 : 0, 44)),
+    shape: const WidgetStatePropertyAll(RoundedRectangleBorder()),
+    backgroundColor: WidgetStateProperty.resolveWith(
+      (s) =>
+          s.contains(WidgetState.focused) ||
+              s.contains(WidgetState.hovered) ||
+              s.contains(WidgetState.pressed)
+          ? Tokens.selected
+          : Colors.transparent,
     ),
   );
+  SubmenuButton menu(String label, List<Widget> items) =>
+      SubmenuButton(style: topStyle, menuChildren: items, child: Text(label));
+  MenuItemButton item(String label, VoidCallback? onTap) =>
+      MenuItemButton(onPressed: onTap, child: Text(label));
+
+  return [
+    menu('File', [
+      item('New lab', onNew),
+      item('Open…  (next update)', null),
+      item('Save  (next update)', null),
+    ]),
+    menu('Edit', [
+      item(
+        'Delete selected',
+        lab.selected == null ? null : () => lab.removeDevice(lab.selected!),
+      ),
+    ]),
+    menu('View', [
+      for (final p in CanvasPattern.values)
+        RadioMenuButton<CanvasPattern>(
+          value: p,
+          groupValue: lab.pattern,
+          onChanged: (v) => lab.setView(pattern: v),
+          child: Text('${_title(p.name)} pattern'),
+        ),
+      const Divider(height: 8),
+      for (final t in CanvasTheme.values)
+        RadioMenuButton<CanvasTheme>(
+          value: t,
+          groupValue: lab.canvasTheme,
+          onChanged: (v) => lab.setView(theme: v),
+          child: Text('${_title(t.name)} canvas'),
+        ),
+      const Divider(height: 8),
+      CheckboxMenuButton(
+        value: lab.showPortLabels,
+        onChanged: (v) => lab.setView(portLabels: v),
+        child: const Text('Port labels on cables'),
+      ),
+      CheckboxMenuButton(
+        value: lab.snapToGrid,
+        onChanged: (v) => lab.setView(snap: v),
+        child: const Text('Snap to grid'),
+      ),
+      const Divider(height: 8),
+      item('Zoom in', () => onZoom(1.25)),
+      item('Zoom out', () => onZoom(0.8)),
+      item('Fit to screen', onFit),
+    ]),
+    menu('Devices', [
+      for (final kind in DeviceKind.values)
+        item('Add ${kind.label}', () => onAdd(kind)),
+    ]),
+    menu('Simulation', [
+      RadioMenuButton<bool>(
+        value: true,
+        groupValue: lab.running,
+        onChanged: (_) => lab.setRunning(true),
+        child: const Text('Run in real time'),
+      ),
+      RadioMenuButton<bool>(
+        value: false,
+        groupValue: lab.running,
+        onChanged: (_) => lab.setRunning(false),
+        child: const Text('Pause'),
+      ),
+      item('Step 100 ms', lab.running ? null : () => lab.advance(100)),
+    ]),
+    menu('Help', [item('About PocketRoute', () => _about(context))]),
+  ];
+}
+
+void _about(BuildContext context) => showDialog<void>(
+  context: context,
+  builder: (context) => AlertDialog(
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.all(Radius.circular(Tokens.radius)),
+    ),
+    title: const Text('PocketRoute', style: TextStyle(fontSize: 16)),
+    content: const Text(
+      'An offline network lab for students.\n\n'
+      'PocketRoute is not affiliated with or endorsed by Cisco Systems, Inc.\n'
+      'IBM Plex fonts: SIL Open Font License 1.1.',
+      style: TextStyle(fontSize: 13),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Close'),
+      ),
+    ],
+  ),
+);
+
+/// The phone palette: a narrow rail of devices and cables, each an icon
+/// over a short label. Tap to add or pick; drag a device onto the canvas.
+class _IconRail extends StatelessWidget {
+  const _IconRail({required this.lab, required this.onAdd});
+
+  final LabController lab;
+  final void Function(DeviceKind kind) onAdd;
+
+  static const _cableLabels = {
+    CableChoice.auto: 'Auto',
+    CableChoice.straight: 'Straight',
+    CableChoice.cross: 'Cross',
+    CableChoice.serial: 'Serial',
+    CableChoice.console: 'Console',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    Widget cell({
+      required Widget icon,
+      required String label,
+      required String tooltip,
+      required VoidCallback onTap,
+      bool selected = false,
+    }) => Tooltip(
+      message: tooltip,
+      child: Material(
+        color: selected ? Tokens.selected : Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          child: SizedBox(
+            height: 52,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                icon,
+                const SizedBox(height: 2),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.clip,
+                  style: const TextStyle(fontSize: 10, color: Tokens.text),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    Widget device(DeviceKind kind) {
+      Widget glyph(Color fill) => DeviceGlyph(
+        kind: kind,
+        color: const Color(0xFF1A7CF0),
+        fill: fill,
+        size: 28,
+      );
+      return Draggable<DeviceKind>(
+        data: kind,
+        dragAnchorStrategy: pointerDragAnchorStrategy,
+        feedback: Transform.translate(
+          offset: const Offset(-28, -28),
+          child: DeviceGlyph(
+            kind: kind,
+            color: const Color(0xFF1A7CF0),
+            fill: Colors.white.withValues(alpha: 0.7),
+          ),
+        ),
+        child: cell(
+          icon: glyph(Tokens.chrome),
+          label: kind.label.replaceAll(' switch', ' sw'),
+          tooltip: 'Add ${kind.label}',
+          onTap: () => onAdd(kind),
+        ),
+      );
+    }
+
+    Widget rule() => const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      child: Divider(height: 1, color: Tokens.border),
+    );
+
+    return Container(
+      width: 64,
+      decoration: const BoxDecoration(
+        color: Tokens.chrome,
+        border: Border(right: BorderSide(color: Tokens.border)),
+      ),
+      child: ListView(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        children: [
+          for (final kind in [
+            DeviceKind.router,
+            DeviceKind.l2switch,
+            DeviceKind.l3switch,
+          ])
+            device(kind),
+          rule(),
+          for (final kind in [
+            DeviceKind.pc,
+            DeviceKind.laptop,
+            DeviceKind.server,
+          ])
+            device(kind),
+          rule(),
+          for (final choice in CableChoice.values)
+            cell(
+              icon: CustomPaint(
+                size: const Size(34, 14),
+                painter: _CableSample(choice, lab.colors),
+              ),
+              label: _cableLabels[choice]!,
+              tooltip: '${choice.label} cable',
+              selected: lab.tool == Tool.cable && lab.cable == choice,
+              onTap: () => lab.setCable(choice),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 class _Palette extends StatefulWidget {

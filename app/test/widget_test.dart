@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketroute/main.dart';
 import 'package:pocketroute/src/lab/lab_controller.dart';
+import 'package:pocketroute/src/ui/lab_screen.dart';
 import 'package:pocketroute_core/pocketroute_core.dart';
 
 void main() {
@@ -23,6 +24,34 @@ void main() {
     await tester.pump();
     expect(find.text('R1'), findsOneWidget);
     expect(find.text('1 devices, 0 cables'), findsOneWidget);
+  });
+
+  testWidgets('a landscape phone gets the compact layout', (tester) async {
+    tester.view.physicalSize = const Size(914, 411);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const PocketRouteApp());
+    // Menus fold into one button; no menu bar, no wide palette.
+    expect(find.byType(MenuBar), findsNothing);
+    expect(find.byIcon(Icons.menu), findsOneWidget);
+    expect(find.text('END DEVICES'), findsNothing);
+    expect(find.byTooltip('Add Router'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Add L3 switch'));
+    await tester.pump();
+    expect(find.text('MLS1'), findsOneWidget);
+
+    // A console opens as a sheet at the right edge with no dock button.
+    final state = tester.state(find.byType(LabScreen)) as dynamic;
+    (state.lab as LabController).openConsole(
+      (state.lab as LabController).nodes.single,
+      near: Offset.zero,
+    );
+    await tester.pump();
+    expect(find.text('CLI'), findsOneWidget);
+    expect(find.byTooltip('Dock below the canvas'), findsNothing);
+    expect(tester.takeException(), isNull);
   });
 
   test('lab controller cables two devices and opens consoles', () {

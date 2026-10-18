@@ -17,6 +17,7 @@ class ConsoleWindowView extends StatelessWidget {
     required this.lab,
     required this.window,
     required this.area,
+    this.compact = false,
   });
 
   final LabController lab;
@@ -25,25 +26,31 @@ class ConsoleWindowView extends StatelessWidget {
   /// The space windows live in (the canvas area).
   final Size area;
 
+  /// Phone layout: a sheet at the right edge; no dragging or docking.
+  final bool compact;
+
   @override
   Widget build(BuildContext context) {
     final docked = window.mode == WindowMode.docked;
+    final ShapeBorder shape = compact
+        ? const Border(left: BorderSide(color: Tokens.windowBorder))
+        : docked
+        ? const Border(top: BorderSide(color: Tokens.windowBorder))
+        : const RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(Tokens.radius)),
+            side: BorderSide(color: Tokens.windowBorder),
+          );
     final body = Material(
       color: Colors.white,
       elevation: docked ? 0 : 6,
       shadowColor: const Color(0x401B2129),
-      shape: docked
-          ? const Border(top: BorderSide(color: Tokens.windowBorder))
-          : const RoundedRectangleBorder(
-              borderRadius: BorderRadius.all(Radius.circular(Tokens.radius)),
-              side: BorderSide(color: Tokens.windowBorder),
-            ),
+      shape: shape,
       clipBehavior: Clip.antiAlias,
       child: Listener(
         onPointerDown: (_) => lab.bringToFront(window),
         child: Column(
           children: [
-            _TitleBar(lab: lab, window: window, area: area),
+            _TitleBar(lab: lab, window: window, area: area, compact: compact),
             Expanded(
               child: _Tabs(lab: lab, window: window),
             ),
@@ -66,15 +73,17 @@ class _TitleBar extends StatelessWidget {
     required this.lab,
     required this.window,
     required this.area,
+    required this.compact,
   });
 
   final LabController lab;
   final ConsoleWindow window;
   final Size area;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    final floating = window.mode == WindowMode.floating;
+    final floating = !compact && window.mode == WindowMode.floating;
     Widget control(String tip, IconData icon, VoidCallback onTap) => Tooltip(
       message: tip,
       child: InkWell(
@@ -130,7 +139,9 @@ class _TitleBar extends StatelessWidget {
                 Icons.minimize,
                 () => lab.setWindowMode(window, WindowMode.minimized),
               ),
-              if (floating)
+              if (compact)
+                const SizedBox.shrink()
+              else if (floating)
                 control(
                   'Dock below the canvas',
                   Icons.vertical_align_bottom,
