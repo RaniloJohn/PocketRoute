@@ -5,7 +5,7 @@
 //   pcC (VLAN 10) --Fa0/3--+ S1 --Gi0/1 trunk-- Gi0/0 R1 --Gi0/1-- Gi0/0 R2 --Gi0/1-- pcR
 //   pcB (VLAN 20) --Fa0/2--+               (.10 / .20 subifs)   10.0.0.0/30         172.16.0.0/24
 
-import 'package:routelab_core/routelab_core.dart';
+import 'package:pocketroute_core/pocketroute_core.dart';
 import 'package:test/test.dart';
 
 import 'support/terminals.dart';

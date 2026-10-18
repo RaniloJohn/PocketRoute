@@ -4,10 +4,19 @@ import '../sim/network.dart';
 import 'command.dart';
 import 'common_commands.dart';
 
-// Help strings here are RouteLab's own wording. Only command names, mode
+// Help strings here are PocketRoute's own wording. Only command names, mode
 // structure and output column layouts follow the public IOS-style convention.
 
-const _interfaceTypes = {'GigabitEthernet': 'Gigabit Ethernet (1 Gb/s) port'};
+const _interfaceTypes = {
+  'GigabitEthernet': 'Gigabit Ethernet (1 Gb/s) port',
+  'Serial': 'Serial WAN port',
+};
+
+/// Clock rates a serial DCE accepts, in bit/s.
+const serialClockRates = [
+  1200, 2400, 4800, 9600, 19200, 38400, 56000, 64000, 72000, 125000, //
+  128000, 148000, 250000, 500000, 800000, 1000000, 1300000, 2000000, 4000000,
+];
 
 /// Builds the command trees for [router].
 CommandSet routerCommands(Router router) {
@@ -69,6 +78,25 @@ CommandSet routerCommands(Router router) {
       'Disable this interface',
       run: (ctx) => _target(ctx).adminUp = false,
       negate: (ctx) => _target(ctx).adminUp = true,
+    ),
+    CmdNode.keyword(
+      'clock',
+      'Serial line clocking',
+      children: [
+        CmdNode.keyword(
+          'rate',
+          'Clock this serial line (DCE end)',
+          negate: (ctx) => _setClock(ctx, null),
+          children: [
+            CmdNode.arg(
+              const IntArg('rate', 1200, 4000000),
+              'Bits per second, e.g. 64000',
+              run: (ctx) => _setClock(ctx, ctx.arg<int>('rate')),
+              negate: (ctx) => _setClock(ctx, null),
+            ),
+          ],
+        ),
+      ],
     ),
   ];
 
@@ -198,6 +226,25 @@ CommandSet routerCommands(Router router) {
 
 RouterInterface _target(CommandContext ctx) =>
     ctx.session.target! as RouterInterface;
+
+void _setClock(CommandContext ctx, int? rate) {
+  final iface = _target(ctx);
+  if (iface.port.medium != PortMedium.serial || !iface.isMain) {
+    ctx.writeln('% Clock rate applies to serial interfaces only');
+    return;
+  }
+  if (rate != null && !serialClockRates.contains(rate)) {
+    ctx.writeln(
+      '% Unsupported clock rate; try one of ${serialClockRates.join(', ')}',
+    );
+    return;
+  }
+  final link = iface.port.link;
+  if (rate != null && link != null && !identical(link.dce, iface.port)) {
+    ctx.warn('% This end is the DTE; the clock is set on the DCE end');
+  }
+  iface.port.clockRate = rate;
+}
 
 /// Splits `GigabitEthernet0/0.10` into its port and subinterface number.
 (Port?, int?, bool) _resolve(InterfaceRef ref, Router router) {
@@ -370,6 +417,9 @@ String renderRouterConfig(Router router) {
           ? ' no ip address'
           : ' ip address $address $mask',
     );
+    if (iface.isMain && iface.port.clockRate != null) {
+      out.writeln(' clock rate ${iface.port.clockRate}');
+    }
     if (!iface.adminUp) out.writeln(' shutdown');
     out.writeln('!');
   }

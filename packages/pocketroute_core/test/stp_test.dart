@@ -7,7 +7,7 @@
 //          Gi0/2  Gi0/2
 //   pc2 on S2 Fa0/1, pc3 on S3 Fa0/1
 
-import 'package:routelab_core/routelab_core.dart';
+import 'package:pocketroute_core/pocketroute_core.dart';
 import 'package:test/test.dart';
 
 import 'support/terminals.dart';

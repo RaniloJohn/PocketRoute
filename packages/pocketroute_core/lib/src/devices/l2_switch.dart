@@ -58,6 +58,14 @@ class L2Switch extends Device implements ConfigurableDevice {
       Port(this, 'GigabitEthernet0/$i', 'Gi0/$i', fastEthernetPorts + i),
   ];
 
+  @override
+  late final List<Port> managementPorts = [
+    Port(this, 'Console', 'Con', 200, medium: PortMedium.console),
+  ];
+
+  @override
+  bool get isSwitchLike => true;
+
   /// VLAN database: ID -> name. VLAN 1 always exists.
   final vlans = SplayTreeMap<int, String>.of({1: 'default'});
 

@@ -3,7 +3,7 @@ import '../protocols/echo.dart';
 import 'command.dart';
 import 'session.dart';
 
-// Help strings here are RouteLab's own wording. Only command names, mode
+// Help strings here are PocketRoute's own wording. Only command names, mode
 // structure and output column layouts follow the public IOS-style convention.
 
 /// What the shared commands need from a device with an IOS-style CLI.

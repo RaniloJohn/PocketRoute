@@ -1,6 +1,6 @@
 # Sources
 
-Every public specification or document consulted while writing RouteLab. Behavior is
+Every public specification or document consulted while writing PocketRoute. Behavior is
 implemented from these; no text, output strings or assets are copied from proprietary
 software. Add an entry before (or in the same commit as) code that relies on it.
 

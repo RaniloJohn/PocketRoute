@@ -6,7 +6,7 @@ import '../sim/network.dart';
 import 'command.dart';
 import 'common_commands.dart';
 
-// Help strings here are RouteLab's own wording. Only command names, mode
+// Help strings here are PocketRoute's own wording. Only command names, mode
 // structure and output column layouts follow the public IOS-style convention.
 
 /// What `interface ...` selected on a switch.

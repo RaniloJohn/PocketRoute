@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: packages/routelab_core
+        working-directory: packages/pocketroute_core
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1

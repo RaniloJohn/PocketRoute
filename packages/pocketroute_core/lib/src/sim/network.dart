@@ -2,8 +2,26 @@ import '../net/frames.dart';
 import '../net/mac_address.dart';
 import 'scheduler.dart';
 
-/// Cable kinds. Copper ports auto-negotiate crossover, so both types link up.
-enum CableType { copperStraight, copperCross }
+/// Cable kinds, each fitting one kind of port.
+enum CableType {
+  /// Copper between unlike devices (host or router to switch).
+  copperStraight,
+
+  /// Copper between like devices (switch to switch, router to router, host to
+  /// router or host).
+  copperCross,
+
+  /// Point-to-point WAN link. The first end cabled is the DCE and must
+  /// supply a clock rate before the line comes up.
+  serial,
+
+  /// Management access from a host's RS-232 port to a device console port.
+  /// Carries no network traffic.
+  console,
+}
+
+/// What a port physically is, and so which cable fits it.
+enum PortMedium { ethernet, serial, console, rs232 }
 
 /// A topology: devices, the links between their ports, and one shared clock.
 class Network {
@@ -34,7 +52,7 @@ class Network {
   }
 
   void remove(Device device) {
-    for (final port in device.ports) {
+    for (final port in device.allPorts) {
       final link = port.link;
       if (link != null) disconnect(link);
     }
@@ -42,7 +60,38 @@ class Network {
     device._network = null;
   }
 
-  Link connect(Port a, Port b, {CableType cable = CableType.copperStraight}) {
+  /// The cable that fits [a] and [b] and works between them, or null if the
+  /// ports cannot be cabled together at all.
+  static CableType? cableFor(Port a, Port b) {
+    final media = {a.medium, b.medium};
+    if (media.length == 1 && a.medium == PortMedium.ethernet) {
+      return a.device.isSwitchLike == b.device.isSwitchLike
+          ? CableType.copperCross
+          : CableType.copperStraight;
+    }
+    if (media.length == 1 && a.medium == PortMedium.serial) {
+      return CableType.serial;
+    }
+    if (media.length == 2 &&
+        media.contains(PortMedium.console) &&
+        media.contains(PortMedium.rs232)) {
+      return CableType.console;
+    }
+    return null;
+  }
+
+  /// Whether [cable] physically fits both ports (it may still not work, e.g.
+  /// a straight-through cable between two switches).
+  static bool fits(CableType cable, Port a, Port b) => switch (cable) {
+    CableType.copperStraight || CableType.copperCross =>
+      a.medium == PortMedium.ethernet && b.medium == PortMedium.ethernet,
+    CableType.serial =>
+      a.medium == PortMedium.serial && b.medium == PortMedium.serial,
+    CableType.console => cableFor(a, b) == CableType.console,
+  };
+
+  /// Cables [a] to [b]. With no [cable] the right one is chosen.
+  Link connect(Port a, Port b, {CableType? cable}) {
     for (final port in [a, b]) {
       if (!identical(port.device._network, this)) {
         throw ArgumentError('${port.device.id} is not in this network');
@@ -54,7 +103,13 @@ class Network {
     if (identical(a.device, b.device)) {
       throw ArgumentError('Cannot cable a device to itself');
     }
-    final link = Link._(this, a, b, cable);
+    final chosen = cable ?? cableFor(a, b);
+    if (chosen == null || !fits(chosen, a, b)) {
+      throw ArgumentError(
+        '${chosen?.name ?? 'No'} cable fits ${a.name} and ${b.name}',
+      );
+    }
+    final link = Link._(this, a, b, chosen);
     a._link = link;
     b._link = link;
     _links.add(link);
@@ -76,11 +131,25 @@ class Link {
   Link._(this.network, this.a, this.b, this.cable);
 
   final Network network;
+
+  /// The first end cabled; the DCE on a serial link.
   final Port a;
   final Port b;
   final CableType cable;
 
   Port otherEnd(Port port) => identical(port, a) ? b : a;
+
+  /// The clocking end of a serial link.
+  Port get dce => a;
+
+  /// Whether this cable can carry traffic between its two ports: the right
+  /// copper type for the devices, a clocked serial line, and never console.
+  bool get works => switch (cable) {
+    CableType.copperStraight => a.device.isSwitchLike != b.device.isSwitchLike,
+    CableType.copperCross => a.device.isSwitchLike == b.device.isSwitchLike,
+    CableType.serial => dce.clockRate != null,
+    CableType.console => false,
+  };
 
   void _carry(Port from, Frame frame) {
     final to = otherEnd(from);
@@ -91,7 +160,7 @@ class Link {
   }
 }
 
-/// A physical Ethernet port.
+/// A physical port: Ethernet, serial, console or RS-232.
 class Port {
   Port(
     this.device,
@@ -99,6 +168,7 @@ class Port {
     this.shortName,
     this.index, {
     this._adminUp = true,
+    this.medium = PortMedium.ethernet,
   }) : mac = MacAddress.derived(device.id, index);
 
   final Device device;
@@ -111,9 +181,11 @@ class Port {
 
   /// Position on the device; feeds the derived MAC address.
   final int index;
+  final PortMedium medium;
   final MacAddress mac;
   String? description;
   bool _adminUp;
+  int? _clockRate;
   Link? _link;
 
   Link? get link => _link;
@@ -128,10 +200,24 @@ class Port {
     _stateChanged();
   }
 
-  /// Line protocol up: cabled, and enabled at both ends.
+  /// Serial clock in bit/s, needed on the DCE end of a serial link.
+  int? get clockRate => _clockRate;
+
+  set clockRate(int? value) {
+    if (value == _clockRate) return;
+    _clockRate = value;
+    _stateChanged();
+  }
+
+  /// Line protocol up: cabled with a working cable, and enabled at both ends.
   bool get isUp {
+    final link = _link;
     final peer = this.peer;
-    return _adminUp && peer != null && peer._adminUp;
+    return _adminUp &&
+        link != null &&
+        peer != null &&
+        peer._adminUp &&
+        link.works;
   }
 
   void send(Frame frame) {
@@ -158,17 +244,29 @@ abstract class Device {
   String hostname;
   Network? _network;
 
+  /// Ports that carry traffic.
   List<Port> get ports;
+
+  /// Management ports (console, RS-232) that carry none.
+  List<Port> get managementPorts => const [];
+
+  Iterable<Port> get allPorts => [...ports, ...managementPorts];
+
+  /// Switches cross their copper pairs (MDI-X); hosts and routers do not.
+  /// Decides whether a straight-through or crossover cable is needed.
+  bool get isSwitchLike => false;
 
   Network get network =>
       _network ?? (throw StateError('$id has not been added to a network'));
+
+  bool get isInNetwork => _network != null;
 
   Scheduler get scheduler => network.scheduler;
 
   /// Finds a port by full or short name, ignoring case.
   Port? port(String name) {
     final wanted = name.toLowerCase();
-    for (final port in ports) {
+    for (final port in allPorts) {
       if (port.name.toLowerCase() == wanted ||
           port.shortName.toLowerCase() == wanted) {
         return port;

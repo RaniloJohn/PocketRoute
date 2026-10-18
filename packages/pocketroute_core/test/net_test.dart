@@ -1,4 +1,4 @@
-import 'package:routelab_core/routelab_core.dart';
+import 'package:pocketroute_core/pocketroute_core.dart';
 import 'package:test/test.dart';
 
 void main() {

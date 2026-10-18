@@ -1,6 +1,6 @@
 {
-    "name": "routelab",
-    "short_name": "routelab",
+    "name": "pocketroute",
+    "short_name": "pocketroute",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

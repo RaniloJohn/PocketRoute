@@ -1,4 +1,4 @@
-/// RouteLab's simulation engine and IOS-style CLI. Pure Dart: no Flutter.
+/// PocketRoute's simulation engine and IOS-style CLI. Pure Dart: no Flutter.
 library;
 
 export 'src/cli/command.dart';

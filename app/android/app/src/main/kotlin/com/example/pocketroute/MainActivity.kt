@@ -1,4 +1,4 @@
-package com.example.routelab
+package com.example.pocketroute
 
 import io.flutter.embedding.android.FlutterActivity
 

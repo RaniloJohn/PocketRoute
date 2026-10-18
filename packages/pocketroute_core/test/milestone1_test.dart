@@ -1,7 +1,7 @@
 // Milestone 1 gate: two PCs on one switch ping each other using IP addresses
 // set through the command line.
 
-import 'package:routelab_core/routelab_core.dart';
+import 'package:pocketroute_core/pocketroute_core.dart';
 import 'package:test/test.dart';
 
 import 'support/terminals.dart';

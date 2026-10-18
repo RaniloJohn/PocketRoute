@@ -1,0 +1,11 @@
+name: pocketroute_core
+description: Network simulation engine and IOS-style CLI for PocketRoute. Pure Dart, no Flutter imports.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.5
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

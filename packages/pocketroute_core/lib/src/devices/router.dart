@@ -138,6 +138,22 @@ class Router extends Device implements ConfigurableDevice {
   late final List<Port> ports = [
     for (var i = 0; i < portCount; i++)
       Port(this, 'GigabitEthernet0/$i', 'Gi0/$i', i, adminUp: false),
+    for (var i = 0; i < serialPortCount; i++)
+      Port(
+        this,
+        'Serial0/0/$i',
+        'S0/0/$i',
+        100 + i,
+        adminUp: false,
+        medium: PortMedium.serial,
+      ),
+  ];
+
+  static const serialPortCount = 2;
+
+  @override
+  late final List<Port> managementPorts = [
+    Port(this, 'Console', 'Con', 200, medium: PortMedium.console),
   ];
 
   late final Map<Port, RouterInterface> _main = {

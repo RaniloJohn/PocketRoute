@@ -1,6 +1,6 @@
-# routelab_core
+# pocketroute_core
 
-RouteLab's simulation engine and IOS-style CLI, in pure Dart (no Flutter imports),
+PocketRoute's simulation engine and IOS-style CLI, in pure Dart (no Flutter imports),
 so it runs headless in `dart test` and can be reused on the web.
 
 - `lib/src/net/`: addresses and frame types (MAC, IPv4, ARP, ICMP)
